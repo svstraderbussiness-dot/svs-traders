@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  padding: 0;
+  background: #09090b;
+  font-family: Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  --accent-color: #2563eb;
+  --accent-rgb: 37, 99, 235;
+}
+
+body {
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+body.theme-compact {
+  letter-spacing: 0.1px;
+}
