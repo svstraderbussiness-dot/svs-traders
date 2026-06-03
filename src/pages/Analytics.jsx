@@ -177,18 +177,22 @@ export default function Analytics() {
 
     const totals = useMemo(() => {
         const now = new Date();
-        const currentYear = now.getFullYear();
-        const currentMonth = now.getMonth();
+
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        const startOfYear = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
+        const endOfYear = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
 
         const todayInvoices = invoices.filter((inv) => isToday(inv.created_at));
         const weekInvoices = invoices.filter((inv) => isWithinDays(inv.created_at, 7));
         const monthInvoices = invoices.filter((inv) => {
             const d = parseDate(inv.created_at);
-            return d && d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+            return d && d >= startOfMonth && d <= endOfMonth;
         });
         const yearInvoices = invoices.filter((inv) => {
             const d = parseDate(inv.created_at);
-            return d && d.getFullYear() === currentYear;
+            return d && d >= startOfYear && d <= endOfYear;
         });
 
         const totalBills = invoices.length;

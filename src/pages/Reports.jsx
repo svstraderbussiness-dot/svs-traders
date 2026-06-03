@@ -3,8 +3,64 @@ import { supabase } from "../lib/supabase";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+function pad2(value) {
+    return String(value).padStart(2, "0");
+}
+
+function getMonthOptions(count = 12) {
+    const options = [];
+    const now = new Date();
+
+    for (let i = 0; i < count; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const value = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+        const label = d.toLocaleString("default", {
+            month: "long",
+            year: "numeric",
+        });
+
+        options.push({ value, label });
+    }
+
+    return options;
+}
+
+function getDailyRange() {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+
+    const endExclusive = new Date();
+    endExclusive.setHours(24, 0, 0, 0);
+
+    return {
+        start: start.toISOString(),
+        end: endExclusive.toISOString(),
+        label: start.toLocaleDateString(),
+    };
+}
+
+function getMonthlyRange(monthValue) {
+    const [yearStr, monthStr] = monthValue.split("-");
+    const year = Number(yearStr);
+    const monthIndex = Number(monthStr) - 1;
+
+    const start = new Date(year, monthIndex, 1, 0, 0, 0, 0);
+    const endExclusive = new Date(year, monthIndex + 1, 1, 0, 0, 0, 0);
+
+    return {
+        start: start.toISOString(),
+        end: endExclusive.toISOString(),
+        label: start.toLocaleString("en-US", {
+            month: "long",
+            year: "numeric",
+        }),
+    };
+}
+
 export default function Reports() {
+    const monthOptions = useMemo(() => getMonthOptions(12), []);
     const [reportMode, setReportMode] = useState("daily");
+    const [selectedMonth, setSelectedMonth] = useState(() => monthOptions[0]?.value || "");
     const [loading, setLoading] = useState(false);
     const [invoices, setInvoices] = useState([]);
     const [invoiceItems, setInvoiceItems] = useState([]);
@@ -17,43 +73,16 @@ export default function Reports() {
             maximumFractionDigits: 2,
         });
 
-    const pad = (n) => String(n).padStart(2, "0");
-
-    const toLocalTimestamp = (date) =>
-        `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-            date.getDate()
-        )} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
-            date.getSeconds()
-        )}`;
-
-    const getReportRange = (mode) => {
-        const now = new Date();
-        const start = new Date();
-        const end = new Date();
-
-        if (mode === "monthly") {
-            start.setDate(1);
-            start.setHours(0, 0, 0, 0);
-            end.setMonth(end.getMonth() + 1, 0);
-            end.setHours(23, 59, 59, 999);
-        } else {
-            start.setHours(0, 0, 0, 0);
-            end.setHours(23, 59, 59, 999);
+    const range = useMemo(() => {
+        if (reportMode === "monthly") {
+            return getMonthlyRange(selectedMonth || monthOptions[0]?.value || "");
         }
-
-        return {
-            start: toLocalTimestamp(start),
-            end: toLocalTimestamp(end),
-            label:
-                mode === "monthly"
-                    ? now.toLocaleString("en-US", { month: "long", year: "numeric" })
-                    : now.toLocaleDateString(),
-        };
-    };
-
-    const range = useMemo(() => getReportRange(reportMode), [reportMode]);
+        return getDailyRange();
+    }, [reportMode, selectedMonth, monthOptions]);
 
     const loadReportData = async () => {
+        if (!range.start || !range.end) return;
+
         setLoading(true);
         setError("");
 
@@ -62,7 +91,7 @@ export default function Reports() {
                 .from("invoices")
                 .select("*")
                 .gte("created_at", range.start)
-                .lte("created_at", range.end)
+                .lt("created_at", range.end)
                 .order("created_at", { ascending: false });
 
             if (invoiceError) throw invoiceError;
@@ -75,7 +104,6 @@ export default function Reports() {
             if (invoiceIds.length === 0) {
                 setInvoiceItems([]);
                 setLastLoadedAt(new Date());
-                setLoading(false);
                 return;
             }
 
@@ -93,15 +121,15 @@ export default function Reports() {
             setError(err?.message || "Failed to load report data.");
             setInvoices([]);
             setInvoiceItems([]);
+        } finally {
+            setLoading(false);
         }
-
-        setLoading(false);
     };
 
     useEffect(() => {
         loadReportData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [reportMode]);
+    }, [reportMode, selectedMonth]);
 
     const reportStats = useMemo(() => {
         const totalBills = invoices.length;
@@ -118,9 +146,7 @@ export default function Reports() {
             0
         );
         const paidBills = invoices.filter((inv) => inv.payment_status === "Paid").length;
-        const pendingBills = invoices.filter(
-            (inv) => inv.payment_status !== "Paid"
-        ).length;
+        const pendingBills = invoices.filter((inv) => inv.payment_status !== "Paid").length;
         const avgBill = totalBills > 0 ? totalIncome / totalBills : 0;
 
         const paymentCounts = invoices.reduce((acc, inv) => {
@@ -221,7 +247,7 @@ export default function Reports() {
                 head: [["Invoice", "Time", "Customer ID", "Items", "Payment", "Status", "Total"]],
                 body: reportStats.recentInvoices.map((inv) => [
                     inv.invoice_code || "-",
-                    inv.created_at ? new Date(inv.created_at).toLocaleTimeString() : "-",
+                    inv.created_at ? new Date(inv.created_at).toLocaleString() : "-",
                     inv.customer_id || "-",
                     inv.total_items || 0,
                     inv.payment_mode || "-",
@@ -278,6 +304,9 @@ export default function Reports() {
     const cardClass =
         "rounded-3xl bg-[#1d1d2e] border border-white/10 shadow-xl p-5 lg:p-6";
 
+    const currentMonthLabel =
+        monthOptions.find((m) => m.value === selectedMonth)?.label || "Select Month";
+
     return (
         <div className="min-h-screen bg-[#061b4d] text-white p-4 lg:p-6">
             <div className="max-w-[1600px] mx-auto">
@@ -288,8 +317,8 @@ export default function Reports() {
                     </p>
                 </div>
 
-                <div className="flex flex-col lg:flex-row gap-4 mb-6">
-                    <div className="flex gap-3">
+                <div className="flex flex-col gap-4 mb-6">
+                    <div className="flex flex-wrap gap-3">
                         <button
                             onClick={() => setReportMode("daily")}
                             className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "daily"
@@ -299,6 +328,7 @@ export default function Reports() {
                         >
                             Daily
                         </button>
+
                         <button
                             onClick={() => setReportMode("monthly")}
                             className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "monthly"
@@ -308,9 +338,29 @@ export default function Reports() {
                         >
                             Monthly
                         </button>
+
+                        {reportMode === "monthly" ? (
+                            <div className="flex items-center gap-3 flex-wrap">
+                                <div className="text-white/60 text-sm">Select Month</div>
+                                <select
+                                    value={selectedMonth}
+                                    onChange={(e) => setSelectedMonth(e.target.value)}
+                                    className="bg-[#111827] border border-white/10 rounded-2xl px-4 py-3 text-white outline-none"
+                                >
+                                    {monthOptions.map((month) => (
+                                        <option key={month.value} value={month.value}>
+                                            {month.label}
+                                        </option>
+                                    ))}
+                                </select>
+                                <div className="text-white/40 text-sm">
+                                    Showing: {currentMonthLabel}
+                                </div>
+                            </div>
+                        ) : null}
                     </div>
 
-                    <div className="flex gap-3 ml-0 lg:ml-auto">
+                    <div className="flex gap-3 ml-0 lg:ml-auto justify-start lg:justify-end">
                         <button
                             onClick={loadReportData}
                             disabled={loading}
@@ -333,46 +383,46 @@ export default function Reports() {
                 ) : null}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/50 text-sm">Total Bills</div>
                         <div className="text-3xl font-bold mt-2">{reportStats.totalBills}</div>
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/50 text-sm">Total Income</div>
                         <div className="text-3xl font-bold mt-2">₹{money(reportStats.totalIncome)}</div>
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/50 text-sm">Total Items Sold</div>
                         <div className="text-3xl font-bold mt-2">{reportStats.totalItems}</div>
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/50 text-sm">Average Bill</div>
                         <div className="text-3xl font-bold mt-2">₹{money(reportStats.avgBill)}</div>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 mb-6">
-                    <div className={`${cardClass}`}>
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-6 mb-6">
+                    <div className={cardClass}>
                         <div className="text-white/60 text-sm">Paid Bills</div>
                         <div className="text-2xl font-bold mt-2">{reportStats.paidBills}</div>
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/60 text-sm">Pending Bills</div>
                         <div className="text-2xl font-bold mt-2">{reportStats.pendingBills}</div>
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="text-white/60 text-sm">Total Discount</div>
                         <div className="text-2xl font-bold mt-2">₹{money(reportStats.totalDiscount)}</div>
                     </div>
                 </div>
 
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-2xl font-bold">Top Products</h2>
                             <span className="text-white/50 text-sm">{reportStats.topProducts.length} items</span>
@@ -396,7 +446,10 @@ export default function Reports() {
                                     </thead>
                                     <tbody>
                                         {reportStats.topProducts.slice(0, 10).map((item) => (
-                                            <tr key={`${item.barcode}-${item.product_name}`} className="border-b border-white/5">
+                                            <tr
+                                                key={`${item.barcode}-${item.product_name}`}
+                                                className="border-b border-white/5"
+                                            >
                                                 <td className="py-3 pr-4">{item.barcode}</td>
                                                 <td className="py-3 pr-4">{item.product_name}</td>
                                                 <td className="py-3 pr-4">{item.brand}</td>
@@ -410,7 +463,7 @@ export default function Reports() {
                         )}
                     </div>
 
-                    <div className={`${cardClass}`}>
+                    <div className={cardClass}>
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-2xl font-bold">Brand Summary</h2>
                             <span className="text-white/50 text-sm">{reportStats.brandSummary.length} brands</span>
@@ -484,7 +537,9 @@ export default function Reports() {
                                         <tr key={inv.id} className="border-b border-white/5">
                                             <td className="py-3 pr-4">{inv.invoice_code}</td>
                                             <td className="py-3 pr-4">
-                                                {inv.created_at ? new Date(inv.created_at).toLocaleString() : "-"}
+                                                {inv.created_at
+                                                    ? new Date(inv.created_at).toLocaleString()
+                                                    : "-"}
                                             </td>
                                             <td className="py-3 pr-4">{inv.customer_id || "-"}</td>
                                             <td className="py-3 pr-4">{inv.total_items || 0}</td>
@@ -499,7 +554,7 @@ export default function Reports() {
                     )}
                 </div>
 
-                <div className={`${cardClass}`}>
+                <div className={cardClass}>
                     <h2 className="text-2xl font-bold mb-4">Payment Breakdown</h2>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
