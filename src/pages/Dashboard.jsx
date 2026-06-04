@@ -62,6 +62,35 @@ function daysAgo(date, days) {
     return d;
 }
 
+function parseDate(value) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function isSameLocalDay(a, b) {
+    if (!a || !b) return false;
+    return (
+        a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate()
+    );
+}
+
+function isSameLocalMonth(a, b) {
+    if (!a || !b) return false;
+    return (
+        a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth()
+    );
+}
+
+function isWithinLastDays(date, reference, days) {
+    if (!date) return false;
+    const start = startOfDay(daysAgo(reference, days - 1));
+    const end = endOfDay(reference);
+    return date >= start && date <= end;
+}
+
 function StatCard({ title, value, hint, icon: Icon, accentColor, tone = "blue" }) {
     const toneClasses = {
         blue: "bg-white/5 border-white/10",
@@ -130,6 +159,7 @@ export default function Dashboard() {
     const [products, setProducts] = useState([]);
     const [monthInvoiceItems, setMonthInvoiceItems] = useState([]);
     const [customersMap, setCustomersMap] = useState({});
+    const [returnsData, setReturnsData] = useState([]);
 
     const loadDashboard = useCallback(async ({ silent = false } = {}) => {
         if (silent) setRefreshing(true);
@@ -139,12 +169,22 @@ export default function Dashboard() {
 
         try {
             const now = new Date();
-            const todayStart = toSqlDateTime(startOfDay(now));
-            const todayEnd = toSqlDateTime(endOfDay(now));
-            const weekStart = toSqlDateTime(startOfDay(daysAgo(now, 6)));
-            const monthStart = toSqlDateTime(startOfMonth(now));
+            const todayStartDate = startOfDay(now);
+            const todayEndDate = endOfDay(now);
+            const weekStartDate = startOfDay(daysAgo(now, 6));
+            const monthStartDate = startOfMonth(now);
+            const returnsQueryStartDate =
+                weekStartDate.getTime() < monthStartDate.getTime()
+                    ? weekStartDate
+                    : monthStartDate;
 
-            const [todayRes, weekRes, monthRes, productsRes] = await Promise.all([
+            const todayStart = toSqlDateTime(todayStartDate);
+            const todayEnd = toSqlDateTime(todayEndDate);
+            const weekStart = toSqlDateTime(weekStartDate);
+            const monthStart = toSqlDateTime(monthStartDate);
+            const returnsStart = toSqlDateTime(returnsQueryStartDate);
+
+            const [todayRes, weekRes, monthRes, productsRes, returnsRes] = await Promise.all([
                 supabase
                     .from("invoices")
                     .select(
@@ -177,22 +217,32 @@ export default function Dashboard() {
                     .select(
                         "id, barcode, product_name, product_code, style_code, size, brand, quantity, mrp, selling_price, low_stock_threshold, created_at"
                     ),
+
+                supabase
+                    .from("returns")
+                    .select("id, invoice_code, status, quantity, refund_amount, created_at")
+                    .gte("created_at", returnsStart)
+                    .lte("created_at", todayEnd)
+                    .order("created_at", { ascending: false }),
             ]);
 
             if (todayRes.error) throw todayRes.error;
             if (weekRes.error) throw weekRes.error;
             if (monthRes.error) throw monthRes.error;
             if (productsRes.error) throw productsRes.error;
+            if (returnsRes.error) throw returnsRes.error;
 
             const todayData = todayRes.data || [];
             const weekData = weekRes.data || [];
             const monthData = monthRes.data || [];
             const productsData = productsRes.data || [];
+            const returnsRows = returnsRes.data || [];
 
             setTodayInvoices(todayData);
             setWeekInvoices(weekData);
             setMonthInvoices(monthData);
             setProducts(productsData);
+            setReturnsData(returnsRows);
 
             const customerIds = [...new Set(monthData.map((inv) => inv.customer_id).filter(Boolean))];
             if (customerIds.length > 0) {
@@ -253,16 +303,53 @@ export default function Dashboard() {
     }, [loadDashboard]);
 
     const summary = useMemo(() => {
-        const todayRevenue = todayInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const now = new Date();
+
+        const todayGrossRevenue = todayInvoices.reduce(
+            (sum, inv) => sum + Number(inv.final_amount || 0),
+            0
+        );
         const todayBills = todayInvoices.length;
-        const todayItemsSold = todayInvoices.reduce((sum, inv) => sum + Number(inv.total_items || 0), 0);
+        const todayItemsSold = todayInvoices.reduce(
+            (sum, inv) => sum + Number(inv.total_items || 0),
+            0
+        );
 
-        const monthRevenue = monthInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const monthGrossRevenue = monthInvoices.reduce(
+            (sum, inv) => sum + Number(inv.final_amount || 0),
+            0
+        );
         const monthBills = monthInvoices.length;
-        const monthItemsSold = monthInvoices.reduce((sum, inv) => sum + Number(inv.total_items || 0), 0);
+        const monthItemsSold = monthInvoices.reduce(
+            (sum, inv) => sum + Number(inv.total_items || 0),
+            0
+        );
 
-        const returnsTodayCount = 0;
-        const returnsTodayRefund = 0;
+        const acceptedReturnsToday = returnsData.filter((r) => {
+            const created = parseDate(r.created_at);
+            const status = String(r.status || "").toLowerCase();
+            return status === "accepted" && created && isSameLocalDay(created, now);
+        });
+
+        const acceptedReturnsMonth = returnsData.filter((r) => {
+            const created = parseDate(r.created_at);
+            const status = String(r.status || "").toLowerCase();
+            return status === "accepted" && created && isSameLocalMonth(created, now);
+        });
+
+        const returnsTodayCount = acceptedReturnsToday.length;
+        const returnsTodayRefund = acceptedReturnsToday.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
+            0
+        );
+
+        const monthAcceptedRefund = acceptedReturnsMonth.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
+            0
+        );
+
+        const todayRevenue = todayGrossRevenue - returnsTodayRefund;
+        const monthRevenue = monthGrossRevenue - monthAcceptedRefund;
 
         const pendingCreditBills = monthInvoices.filter((inv) => {
             const status = String(inv.payment_status || "").toLowerCase();
@@ -288,10 +375,12 @@ export default function Dashboard() {
             pendingCreditBills,
             inventoryValue,
         };
-    }, [monthInvoices, products, todayInvoices]);
+    }, [monthInvoices, products, returnsData, todayInvoices]);
 
     const trendData = useMemo(() => {
         const now = new Date();
+        const weekStart = startOfDay(daysAgo(now, 6));
+
         const labels = Array.from({ length: 7 }, (_, idx) => {
             const d = daysAgo(now, 6 - idx);
             return {
@@ -300,8 +389,27 @@ export default function Dashboard() {
             };
         });
 
+        const acceptedRefundByDay = new Map();
+
+        returnsData.forEach((r) => {
+            const created = parseDate(r.created_at);
+            const status = String(r.status || "").toLowerCase();
+
+            if (!created || status !== "accepted") return;
+            if (created < weekStart || created > endOfDay(now)) return;
+
+            const key = `${created.getFullYear()}-${pad2(created.getMonth() + 1)}-${pad2(
+                created.getDate()
+            )}`;
+
+            acceptedRefundByDay.set(
+                key,
+                (acceptedRefundByDay.get(key) || 0) + Number(r.refund_amount || 0)
+            );
+        });
+
         return labels.map((item) => {
-            const revenue = weekInvoices.reduce((sum, inv) => {
+            const grossRevenue = weekInvoices.reduce((sum, inv) => {
                 const invDate = new Date(inv.created_at);
                 const key = `${invDate.getFullYear()}-${pad2(invDate.getMonth() + 1)}-${pad2(
                     invDate.getDate()
@@ -310,12 +418,14 @@ export default function Dashboard() {
                 return sum;
             }, 0);
 
+            const acceptedRefund = Number(acceptedRefundByDay.get(item.key) || 0);
+
             return {
                 ...item,
-                revenue,
+                revenue: grossRevenue - acceptedRefund,
             };
         });
-    }, [weekInvoices]);
+    }, [returnsData, weekInvoices]);
 
     const brandPerformance = useMemo(() => {
         const grouped = new Map();

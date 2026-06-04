@@ -20,20 +20,13 @@ function parseDbDate(dateValue) {
     if (dateValue instanceof Date) return dateValue;
 
     const raw = String(dateValue).trim();
-
     if (!raw) return null;
 
-    // If the string already has timezone info, let Date parse it normally.
     if (/[zZ]$/.test(raw) || /[+-]\d{2}:\d{2}$/.test(raw)) {
         return new Date(raw.replace(" ", "T"));
     }
 
-    // Supabase timestamp strings are often returned without timezone.
-    // Treat them as UTC so they display correctly in Asia/Kolkata.
-    const normalized = raw.includes("T")
-        ? `${raw}Z`
-        : `${raw.replace(" ", "T")}Z`;
-
+    const normalized = raw.includes("T") ? `${raw}Z` : `${raw.replace(" ", "T")}Z`;
     return new Date(normalized);
 }
 
@@ -65,12 +58,15 @@ function getTodayRange() {
 
 function buildInvoiceCode(prefix = "SVS") {
     const now = new Date();
-    const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(
-        2,
-        "0"
-    )}${String(now.getDate()).padStart(2, "0")}`;
+    const datePart = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+        now.getDate()
+    ).padStart(2, "0")}`;
     const randomPart = String(Math.floor(Math.random() * 9000) + 1000);
     return `${prefix}-${datePart}-${randomPart}`;
+}
+
+function isAcceptedReturn(row) {
+    return String(row?.status || "").toLowerCase() === "accepted";
 }
 
 export default function Billing() {
@@ -372,16 +368,36 @@ export default function Billing() {
         try {
             const { start, end } = getTodayRange();
 
-            const { data, error } = await supabase
-                .from("invoices")
-                .select("id, invoice_code, total_items, final_amount, payment_status, created_at")
-                .gte("created_at", start)
-                .lte("created_at", end)
-                .order("created_at", { ascending: false });
+            const [invoiceRes, returnsRes] = await Promise.all([
+                supabase
+                    .from("invoices")
+                    .select("id, invoice_code, total_items, final_amount, payment_status, created_at")
+                    .gte("created_at", start)
+                    .lte("created_at", end)
+                    .order("created_at", { ascending: false }),
 
-            if (error) throw error;
+                supabase
+                    .from("returns")
+                    .select("invoice_code, created_at, status")
+                    .eq("status", "Accepted")
+                    .gte("created_at", start)
+                    .lte("created_at", end),
+            ]);
 
-            setTodayInvoices(data || []);
+            if (invoiceRes.error) throw invoiceRes.error;
+            if (returnsRes.error) throw returnsRes.error;
+
+            const invoiceList = invoiceRes.data || [];
+            const returnedInvoiceCodes = new Set(
+                (returnsRes.data || []).map((r) => String(r.invoice_code || ""))
+            );
+
+            const updatedInvoices = invoiceList.map((invoice) => ({
+                ...invoice,
+                isReturnedToday: returnedInvoiceCodes.has(String(invoice.invoice_code || "")),
+            }));
+
+            setTodayInvoices(updatedInvoices);
         } catch (err) {
             console.error(err);
             alert(err?.message || "Could not load today's invoices.");
@@ -394,38 +410,58 @@ export default function Billing() {
         loadTodayInvoices();
     }, []);
 
-    const downloadDailyReportPDF = async () => {
-        setHistoryLoading(true);
+    const getTodaySalesReportData = async () => {
+        const { start, end } = getTodayRange();
 
-        try {
-            const { start, end } = getTodayRange();
-
-            const { data: invoices, error: invoiceError } = await supabase
+        const [invoiceRes, returnsRes] = await Promise.all([
+            supabase
                 .from("invoices")
                 .select(
                     "id, invoice_code, subtotal, discount_amount, final_amount, payment_mode, payment_status, total_items, created_at"
                 )
                 .gte("created_at", start)
                 .lte("created_at", end)
-                .order("created_at", { ascending: true });
+                .order("created_at", { ascending: true }),
 
-            if (invoiceError) throw invoiceError;
+            supabase
+                .from("returns")
+                .select("invoice_code, quantity, refund_amount, status, created_at")
+                .eq("status", "Accepted")
+                .gte("created_at", start)
+                .lte("created_at", end),
+        ]);
 
-            const invoiceList = invoices || [];
-            const invoiceIds = invoiceList.map((inv) => inv.id);
+        if (invoiceRes.error) throw invoiceRes.error;
+        if (returnsRes.error) throw returnsRes.error;
 
-            let invoiceItems = [];
-            if (invoiceIds.length > 0) {
-                const { data: items, error: itemsError } = await supabase
-                    .from("invoice_items")
-                    .select("*")
-                    .in("invoice_id", invoiceIds);
+        const invoiceList = invoiceRes.data || [];
+        const returnedInvoiceCodes = new Set(
+            (returnsRes.data || []).map((r) => String(r.invoice_code || ""))
+        );
 
-                if (itemsError) throw itemsError;
-                invoiceItems = items || [];
-            }
+        const updatedInvoices = invoiceList.map((invoice) => ({
+            ...invoice,
+            isReturnedToday: returnedInvoiceCodes.has(String(invoice.invoice_code || "")),
+        }));
 
-            const totalIncome = invoiceList.reduce(
+        const returnedRefundTotal = (returnsRes.data || []).reduce(
+            (sum, row) => sum + Number(row.refund_amount || 0),
+            0
+        );
+
+        return {
+            invoiceList: updatedInvoices,
+            returnedRefundTotal,
+        };
+    };
+
+    const downloadDailyReportPDF = async () => {
+        setHistoryLoading(true);
+
+        try {
+            const { invoiceList, returnedRefundTotal } = await getTodaySalesReportData();
+
+            const totalGrossIncome = invoiceList.reduce(
                 (sum, inv) => sum + Number(inv.final_amount || 0),
                 0
             );
@@ -442,9 +478,18 @@ export default function Billing() {
                 0
             );
 
+            const totalIncome = Math.max(totalGrossIncome - returnedRefundTotal, 0);
+
+            const { data: invoiceItems, error: itemsError } = await supabase
+                .from("invoice_items")
+                .select("*")
+                .in("invoice_id", invoiceList.map((inv) => inv.id));
+
+            if (itemsError) throw itemsError;
+
             const soldMap = new Map();
 
-            invoiceItems.forEach((item) => {
+            (invoiceItems || []).forEach((item) => {
                 const key = String(item.product_id || `${item.barcode}-${item.product_name}`);
                 const existing = soldMap.get(key) || {
                     barcode: item.barcode || "-",
@@ -481,17 +526,19 @@ export default function Billing() {
             doc.text(`Total Bills: ${totalBills}`, 14, 29);
             doc.text(`Total Items Sold: ${totalItemsSold}`, 14, 35);
             doc.text(`Total Discount: ₹${money(totalDiscount)}`, 14, 41);
-            doc.text(`Total Income: ₹${money(totalIncome)}`, 14, 47);
+            doc.text(`Gross Income: ₹${money(totalGrossIncome)}`, 14, 47);
+            doc.text(`Returned Today: ₹${money(returnedRefundTotal)}`, 14, 53);
+            doc.text(`Net Income: ₹${money(totalIncome)}`, 14, 59);
 
             autoTable(doc, {
-                startY: 55,
+                startY: 67,
                 head: [["Invoice", "Time", "Items", "Payment", "Status", "Total"]],
                 body: invoiceList.map((inv) => [
                     inv.invoice_code || "-",
                     formatIST(inv.created_at),
                     inv.total_items || 0,
                     inv.payment_mode || "-",
-                    inv.payment_status || "-",
+                    inv.isReturnedToday ? "Returned" : inv.payment_status || "-",
                     `₹${money(inv.final_amount)}`,
                 ]),
                 styles: {
@@ -563,9 +610,7 @@ export default function Billing() {
             return;
         }
 
-        const invoiceCode = settings.auto_invoice
-            ? buildInvoiceCode(invoicePrefix)
-            : manualInvoiceCode.trim();
+        const invoiceCode = settings.auto_invoice ? buildInvoiceCode(invoicePrefix) : manualInvoiceCode.trim();
 
         if (!invoiceCode) {
             alert("Enter invoice code.");
@@ -595,9 +640,7 @@ export default function Billing() {
                 }
 
                 if (Number(latestProduct.quantity || 0) < item.quantity) {
-                    throw new Error(
-                        `Not enough stock for ${item.product_name}. Available: ${latestProduct.quantity}`
-                    );
+                    throw new Error(`Not enough stock for ${item.product_name}. Available: ${latestProduct.quantity}`);
                 }
             }
 
@@ -694,10 +737,7 @@ export default function Billing() {
                 brand: item.brand,
             }));
 
-            const { error: itemsError } = await supabase
-                .from("invoice_items")
-                .insert(invoiceItemsPayload);
-
+            const { error: itemsError } = await supabase.from("invoice_items").insert(invoiceItemsPayload);
             if (itemsError) throw itemsError;
 
             for (const item of cart) {
@@ -1085,7 +1125,15 @@ Thank you for your purchase.`;
                                                     <td className="py-3 pr-4">{formatIST(inv.created_at)}</td>
                                                     <td className="py-3 pr-4">{inv.total_items || 0}</td>
                                                     <td className="py-3 pr-4">₹{money(inv.final_amount)}</td>
-                                                    <td className="py-3 pr-4">{inv.payment_status}</td>
+                                                    <td className="py-3 pr-4">
+                                                        {inv.isReturnedToday ? (
+                                                            <span className="font-semibold text-red-300">
+                                                                Returned
+                                                            </span>
+                                                        ) : (
+                                                            inv.payment_status
+                                                        )}
+                                                    </td>
                                                 </tr>
                                             ))}
                                         </tbody>

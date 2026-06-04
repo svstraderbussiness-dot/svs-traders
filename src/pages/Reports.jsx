@@ -57,13 +57,20 @@ function getMonthlyRange(monthValue) {
     };
 }
 
+function isAcceptedReturn(row) {
+    return String(row?.status || "").toLowerCase() === "accepted";
+}
+
 export default function Reports() {
     const monthOptions = useMemo(() => getMonthOptions(12), []);
     const [reportMode, setReportMode] = useState("daily");
-    const [selectedMonth, setSelectedMonth] = useState(() => monthOptions[0]?.value || "");
+    const [selectedMonth, setSelectedMonth] = useState(
+        () => getMonthOptions(12)[0]?.value || ""
+    );
     const [loading, setLoading] = useState(false);
     const [invoices, setInvoices] = useState([]);
     const [invoiceItems, setInvoiceItems] = useState([]);
+    const [returnsData, setReturnsData] = useState([]);
     const [error, setError] = useState("");
     const [lastLoadedAt, setLastLoadedAt] = useState(null);
 
@@ -87,17 +94,30 @@ export default function Reports() {
         setError("");
 
         try {
-            const { data: invoiceData, error: invoiceError } = await supabase
-                .from("invoices")
-                .select("*")
-                .gte("created_at", range.start)
-                .lt("created_at", range.end)
-                .order("created_at", { ascending: false });
+            const [invoiceRes, returnsRes] = await Promise.all([
+                supabase
+                    .from("invoices")
+                    .select("*")
+                    .gte("created_at", range.start)
+                    .lt("created_at", range.end)
+                    .order("created_at", { ascending: false }),
 
-            if (invoiceError) throw invoiceError;
+                supabase
+                    .from("returns")
+                    .select("id, invoice_code, barcode, product_name, quantity, refund_amount, status, created_at, reason, rejection_reason, customer_name, phone_number, invoice_date, processed_by, add_to_inventory")
+                    .gte("created_at", range.start)
+                    .lt("created_at", range.end)
+                    .order("created_at", { ascending: false }),
+            ]);
 
-            const safeInvoices = invoiceData || [];
+            if (invoiceRes.error) throw invoiceRes.error;
+            if (returnsRes.error) throw returnsRes.error;
+
+            const safeInvoices = invoiceRes.data || [];
+            const safeReturns = returnsRes.data || [];
+
             setInvoices(safeInvoices);
+            setReturnsData(safeReturns);
 
             const invoiceIds = safeInvoices.map((inv) => inv.id);
 
@@ -121,6 +141,7 @@ export default function Reports() {
             setError(err?.message || "Failed to load report data.");
             setInvoices([]);
             setInvoiceItems([]);
+            setReturnsData([]);
         } finally {
             setLoading(false);
         }
@@ -133,20 +154,40 @@ export default function Reports() {
 
     const reportStats = useMemo(() => {
         const totalBills = invoices.length;
-        const totalIncome = invoices.reduce(
+
+        const grossIncome = invoices.reduce(
             (sum, inv) => sum + Number(inv.final_amount || 0),
             0
         );
+
         const totalDiscount = invoices.reduce(
             (sum, inv) => sum + Number(inv.discount_amount || 0),
             0
         );
-        const totalItems = invoices.reduce(
+
+        const grossItems = invoices.reduce(
             (sum, inv) => sum + Number(inv.total_items || 0),
             0
         );
+
         const paidBills = invoices.filter((inv) => inv.payment_status === "Paid").length;
         const pendingBills = invoices.filter((inv) => inv.payment_status !== "Paid").length;
+        const grossAvgBill = totalBills > 0 ? grossIncome / totalBills : 0;
+
+        const acceptedReturns = returnsData.filter(isAcceptedReturn);
+
+        const acceptedReturnRefund = acceptedReturns.reduce(
+            (sum, row) => sum + Number(row.refund_amount || 0),
+            0
+        );
+
+        const acceptedReturnQty = acceptedReturns.reduce(
+            (sum, row) => sum + Number(row.quantity || 0),
+            0
+        );
+
+        const totalIncome = Math.max(grossIncome - acceptedReturnRefund, 0);
+        const totalItems = Math.max(grossItems - acceptedReturnQty, 0);
         const avgBill = totalBills > 0 ? totalIncome / totalBills : 0;
 
         const paymentCounts = invoices.reduce((acc, inv) => {
@@ -163,6 +204,9 @@ export default function Reports() {
 
         const productMap = new Map();
         const brandMap = new Map();
+        const barcodeBrandMap = new Map();
+        const returnQtyByBarcode = new Map();
+        const returnRefundByBarcode = new Map();
 
         invoiceItems.forEach((item) => {
             const productKey = String(
@@ -170,11 +214,16 @@ export default function Reports() {
             );
             const productName = item.product_name || item.product_code || "Product";
             const brandName = item.brand || "Unknown";
+            const barcode = item.barcode || "-";
             const qty = Number(item.quantity || 0);
             const amount = Number(item.subtotal || 0);
 
+            if (barcode && barcode !== "-") {
+                barcodeBrandMap.set(barcode, brandName);
+            }
+
             const productExisting = productMap.get(productKey) || {
-                barcode: item.barcode || "-",
+                barcode,
                 product_name: productName,
                 brand: brandName,
                 qty: 0,
@@ -196,8 +245,64 @@ export default function Reports() {
             brandMap.set(brandName, brandExisting);
         });
 
-        const topProducts = [...productMap.values()].sort((a, b) => b.qty - a.qty);
-        const brandSummary = [...brandMap.values()].sort((a, b) => b.amount - a.amount);
+        acceptedReturns.forEach((row) => {
+            const barcode = row.barcode || "-";
+            if (!barcode || barcode === "-") return;
+
+            returnQtyByBarcode.set(
+                barcode,
+                (returnQtyByBarcode.get(barcode) || 0) + Number(row.quantity || 0)
+            );
+
+            returnRefundByBarcode.set(
+                barcode,
+                (returnRefundByBarcode.get(barcode) || 0) + Number(row.refund_amount || 0)
+            );
+        });
+
+        const adjustedProducts = [...productMap.values()].map((item) => {
+            const returnedQty = Number(returnQtyByBarcode.get(item.barcode) || 0);
+            const returnedRefund = Number(returnRefundByBarcode.get(item.barcode) || 0);
+
+            return {
+                ...item,
+                qty: Math.max(Number(item.qty || 0) - returnedQty, 0),
+                amount: Math.max(Number(item.amount || 0) - returnedRefund, 0),
+            };
+        });
+
+        const adjustedBrandMap = new Map();
+
+        brandMap.forEach((item, brandName) => {
+            adjustedBrandMap.set(brandName, {
+                brand: brandName,
+                qty: Number(item.qty || 0),
+                amount: Number(item.amount || 0),
+            });
+        });
+
+        acceptedReturns.forEach((row) => {
+            const barcode = row.barcode || "-";
+            const brandName = barcodeBrandMap.get(barcode) || "Unknown";
+            const entry = adjustedBrandMap.get(brandName) || {
+                brand: brandName,
+                qty: 0,
+                amount: 0,
+            };
+
+            entry.qty = Math.max(entry.qty - Number(row.quantity || 0), 0);
+            entry.amount = Math.max(entry.amount - Number(row.refund_amount || 0), 0);
+            adjustedBrandMap.set(brandName, entry);
+        });
+
+        const topProducts = adjustedProducts
+            .sort((a, b) => b.qty - a.qty)
+            .filter((item) => item.qty > 0 || item.amount > 0);
+
+        const brandSummary = [...adjustedBrandMap.values()]
+            .sort((a, b) => b.amount - a.amount)
+            .filter((item) => item.qty > 0 || item.amount > 0);
+
         const recentInvoices = [...invoices].sort(
             (a, b) =>
                 new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
@@ -206,18 +311,23 @@ export default function Reports() {
         return {
             totalBills,
             totalIncome,
+            grossIncome,
+            acceptedReturnRefund,
+            acceptedReturnQty,
             totalDiscount,
             totalItems,
+            grossItems,
             paidBills,
             pendingBills,
             avgBill,
+            grossAvgBill,
             paymentCounts,
             paymentAmount,
             topProducts,
             brandSummary,
             recentInvoices,
         };
-    }, [invoices, invoiceItems]);
+    }, [invoices, invoiceItems, returnsData]);
 
     const downloadPDF = () => {
         try {
@@ -237,13 +347,15 @@ export default function Reports() {
             doc.text(`Generated At: ${today.toLocaleString()}`, 14, 29);
             doc.text(`Total Bills: ${reportStats.totalBills}`, 14, 35);
             doc.text(`Total Items Sold: ${reportStats.totalItems}`, 14, 41);
-            doc.text(`Paid Bills: ${reportStats.paidBills}`, 14, 47);
-            doc.text(`Pending Bills: ${reportStats.pendingBills}`, 14, 53);
-            doc.text(`Total Discount: ₹${money(reportStats.totalDiscount)}`, 14, 59);
-            doc.text(`Total Income: ₹${money(reportStats.totalIncome)}`, 14, 65);
+            doc.text(`Accepted Return Qty: ${reportStats.acceptedReturnQty}`, 14, 47);
+            doc.text(`Accepted Return Refund: ₹${money(reportStats.acceptedReturnRefund)}`, 14, 53);
+            doc.text(`Paid Bills: ${reportStats.paidBills}`, 14, 59);
+            doc.text(`Pending Bills: ${reportStats.pendingBills}`, 14, 65);
+            doc.text(`Total Discount: ₹${money(reportStats.totalDiscount)}`, 14, 71);
+            doc.text(`Net Income: ₹${money(reportStats.totalIncome)}`, 14, 77);
 
             autoTable(doc, {
-                startY: 72,
+                startY: 84,
                 head: [["Invoice", "Time", "Customer ID", "Items", "Payment", "Status", "Total"]],
                 body: reportStats.recentInvoices.map((inv) => [
                     inv.invoice_code || "-",
@@ -389,8 +501,11 @@ export default function Reports() {
                     </div>
 
                     <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Total Income</div>
+                        <div className="text-white/50 text-sm">Net Income</div>
                         <div className="text-3xl font-bold mt-2">₹{money(reportStats.totalIncome)}</div>
+                        <div className="mt-2 text-xs text-white/45">
+                            Gross ₹{money(reportStats.grossIncome)} - Returns ₹{money(reportStats.acceptedReturnRefund)}
+                        </div>
                     </div>
 
                     <div className={cardClass}>

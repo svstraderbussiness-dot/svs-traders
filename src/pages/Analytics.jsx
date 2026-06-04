@@ -27,6 +27,87 @@ const PIE_COLORS = [
     "#14b8a6",
 ];
 
+function money(value) {
+    return Number(value || 0).toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+    });
+}
+
+function pad(value) {
+    return String(value).padStart(2, "0");
+}
+
+function parseDate(value) {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function startOfDay(date = new Date()) {
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+function endOfDay(date = new Date()) {
+    const d = new Date(date);
+    d.setHours(23, 59, 59, 999);
+    return d;
+}
+
+function daysAgo(date, days) {
+    const d = new Date(date);
+    d.setDate(d.getDate() - days);
+    return d;
+}
+
+function isSameLocalDay(a, b) {
+    if (!a || !b) return false;
+    return (
+        a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate()
+    );
+}
+
+function isSameLocalMonth(a, b) {
+    if (!a || !b) return false;
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
+}
+
+function isSameLocalYear(a, b) {
+    if (!a || !b) return false;
+    return a.getFullYear() === b.getFullYear();
+}
+
+function isWithinDays(value, days) {
+    const d = parseDate(value);
+    if (!d) return false;
+    if (days === Infinity) return true;
+    const from = startOfDay(daysAgo(new Date(), days - 1));
+    return d >= from;
+}
+
+function isAcceptedReturn(row) {
+    return String(row?.status || "").toLowerCase() === "accepted";
+}
+
+function toDayKey(value) {
+    const d = parseDate(value);
+    if (!d) return null;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatDayLabel(key) {
+    if (!key) return "-";
+    const d = new Date(`${key}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return key;
+    return d.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+    });
+}
+
 export default function Analytics() {
     const [products, setProducts] = useState([]);
     const [invoices, setInvoices] = useState([]);
@@ -43,59 +124,6 @@ export default function Analytics() {
             maximumFractionDigits: 2,
         });
     }, []);
-
-    const pad = (value) => String(value).padStart(2, "0");
-
-    const parseDate = useCallback((value) => {
-        const d = new Date(value);
-        return Number.isNaN(d.getTime()) ? null : d;
-    }, []);
-
-    const toDayKey = useCallback(
-        (value) => {
-            const d = parseDate(value);
-            if (!d) return null;
-            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-        },
-        [parseDate]
-    );
-
-    const formatDayLabel = useCallback((key) => {
-        if (!key) return "-";
-        const d = new Date(`${key}T00:00:00`);
-        if (Number.isNaN(d.getTime())) return key;
-        return d.toLocaleDateString(undefined, {
-            month: "short",
-            day: "numeric",
-        });
-    }, []);
-
-    const isToday = useCallback(
-        (value) => {
-            const d = parseDate(value);
-            if (!d) return false;
-            const now = new Date();
-            return (
-                d.getFullYear() === now.getFullYear() &&
-                d.getMonth() === now.getMonth() &&
-                d.getDate() === now.getDate()
-            );
-        },
-        [parseDate]
-    );
-
-    const isWithinDays = useCallback(
-        (value, days) => {
-            const d = parseDate(value);
-            if (!d) return false;
-            if (days === Infinity) return true;
-            const from = new Date();
-            from.setHours(0, 0, 0, 0);
-            from.setDate(from.getDate() - (days - 1));
-            return d >= from;
-        },
-        [parseDate]
-    );
 
     const loadAnalytics = useCallback(async () => {
         setLoading(true);
@@ -135,11 +163,29 @@ export default function Analytics() {
 
     const productById = useMemo(() => {
         const map = new Map();
+        products.forEach((p) => map.set(p.id, p));
+        return map;
+    }, [products]);
+
+    const productByBarcode = useMemo(() => {
+        const map = new Map();
         products.forEach((p) => {
-            map.set(p.id, p);
+            if (p.barcode) {
+                map.set(String(p.barcode), p);
+            }
         });
         return map;
     }, [products]);
+
+    const invoiceByCode = useMemo(() => {
+        const map = new Map();
+        invoices.forEach((inv) => {
+            if (inv.invoice_code) {
+                map.set(String(inv.invoice_code), inv);
+            }
+        });
+        return map;
+    }, [invoices]);
 
     const selectedInvoices = useMemo(() => {
         const days =
@@ -152,7 +198,7 @@ export default function Analytics() {
                         : Infinity;
 
         return invoices.filter((inv) => isWithinDays(inv.created_at, days));
-    }, [chartRange, invoices, isWithinDays]);
+    }, [chartRange, invoices]);
 
     const selectedInvoiceIds = useMemo(() => {
         return new Set(selectedInvoices.map((inv) => inv.id));
@@ -172,65 +218,74 @@ export default function Analytics() {
                         ? 90
                         : Infinity;
 
-        return returnsData.filter((item) => isWithinDays(item.created_at, days));
-    }, [chartRange, returnsData, isWithinDays]);
+        return returnsData.filter((item) => isWithinDays(item.created_at, days) && isAcceptedReturn(item));
+    }, [chartRange, returnsData]);
 
     const totals = useMemo(() => {
         const now = new Date();
 
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-
-        const startOfYear = new Date(now.getFullYear(), 0, 1, 0, 0, 0, 0);
-        const endOfYear = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
-
-        const todayInvoices = invoices.filter((inv) => isToday(inv.created_at));
+        const todayInvoices = invoices.filter((inv) => isSameLocalDay(parseDate(inv.created_at), now));
         const weekInvoices = invoices.filter((inv) => isWithinDays(inv.created_at, 7));
-        const monthInvoices = invoices.filter((inv) => {
-            const d = parseDate(inv.created_at);
-            return d && d >= startOfMonth && d <= endOfMonth;
-        });
-        const yearInvoices = invoices.filter((inv) => {
-            const d = parseDate(inv.created_at);
-            return d && d >= startOfYear && d <= endOfYear;
-        });
+        const monthInvoices = invoices.filter((inv) => isSameLocalMonth(parseDate(inv.created_at), now));
+        const yearInvoices = invoices.filter((inv) => isSameLocalYear(parseDate(inv.created_at), now));
+
+        const todayAcceptedReturns = returnsData.filter(
+            (r) => isAcceptedReturn(r) && isSameLocalDay(parseDate(r.created_at), now)
+        );
+        const weekAcceptedReturns = returnsData.filter(
+            (r) => isAcceptedReturn(r) && isWithinDays(r.created_at, 7)
+        );
+        const monthAcceptedReturns = returnsData.filter(
+            (r) => isAcceptedReturn(r) && isSameLocalMonth(parseDate(r.created_at), now)
+        );
+        const yearAcceptedReturns = returnsData.filter(
+            (r) => isAcceptedReturn(r) && isSameLocalYear(parseDate(r.created_at), now)
+        );
 
         const totalBills = invoices.length;
-        const todayRevenue = todayInvoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
+
+        const todayGross = todayInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const weekGross = weekInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const monthGross = monthInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const yearGross = yearInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+
+        const todayRefund = todayAcceptedReturns.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
             0
         );
-        const weekRevenue = weekInvoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
+        const weekRefund = weekAcceptedReturns.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
             0
         );
-        const monthRevenue = monthInvoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
+        const monthRefund = monthAcceptedReturns.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
             0
         );
-        const yearRevenue = yearInvoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
+        const yearRefund = yearAcceptedReturns.reduce(
+            (sum, r) => sum + Number(r.refund_amount || 0),
             0
         );
+
+        const todayRevenue = Math.max(todayGross - todayRefund, 0);
+        const weekRevenue = Math.max(weekGross - weekRefund, 0);
+        const monthRevenue = Math.max(monthGross - monthRefund, 0);
+        const yearRevenue = Math.max(yearGross - yearRefund, 0);
 
         const totalDiscount = invoices.reduce(
             (sum, inv) => sum + Number(inv.discount_amount || 0),
             0
         );
-        const totalIncome = invoices.reduce(
+        const grossIncome = invoices.reduce(
             (sum, inv) => sum + Number(inv.final_amount || 0),
             0
         );
-
-        const totalReturnRefund = returnsData.reduce(
-            (sum, item) => sum + Number(item.refund_amount || 0),
-            0
-        );
-        const totalReturnQty = returnsData.reduce(
-            (sum, item) => sum + Number(item.quantity || 0),
-            0
-        );
-        const totalReturns = returnsData.length;
+        const totalReturnRefund = returnsData
+            .filter(isAcceptedReturn)
+            .reduce((sum, item) => sum + Number(item.refund_amount || 0), 0);
+        const totalReturnQty = returnsData
+            .filter(isAcceptedReturn)
+            .reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        const totalReturns = returnsData.filter(isAcceptedReturn).length;
 
         const paymentCount = invoices.reduce((acc, inv) => {
             const key = inv.payment_mode || "Unknown";
@@ -238,9 +293,25 @@ export default function Analytics() {
             return acc;
         }, {});
 
-        const paymentRevenue = invoices.reduce((acc, inv) => {
+        const grossPaymentRevenue = invoices.reduce((acc, inv) => {
             const key = inv.payment_mode || "Unknown";
             acc[key] = (acc[key] || 0) + Number(inv.final_amount || 0);
+            return acc;
+        }, {});
+
+        const returnRefundByPaymentMode = returnsData.reduce((acc, r) => {
+            if (!isAcceptedReturn(r)) return acc;
+            const linkedInvoice = invoiceByCode.get(String(r.invoice_code || ""));
+            const mode = linkedInvoice?.payment_mode || "Unknown";
+            acc[mode] = (acc[mode] || 0) + Number(r.refund_amount || 0);
+            return acc;
+        }, {});
+
+        const paymentRevenue = Object.keys(grossPaymentRevenue).reduce((acc, mode) => {
+            acc[mode] = Math.max(
+                Number(grossPaymentRevenue[mode] || 0) - Number(returnRefundByPaymentMode[mode] || 0),
+                0
+            );
             return acc;
         }, {});
 
@@ -249,8 +320,9 @@ export default function Analytics() {
             0
         );
 
+        const totalIncome = Math.max(grossIncome - totalReturnRefund, 0);
         const billAverage = totalBills > 0 ? totalIncome / totalBills : 0;
-        const netRevenue = totalIncome - totalReturnRefund;
+        const netRevenue = totalIncome;
 
         return {
             todayRevenue,
@@ -259,6 +331,7 @@ export default function Analytics() {
             yearRevenue,
             totalBills,
             totalIncome,
+            grossIncome,
             totalDiscount,
             billAverage,
             totalReturnRefund,
@@ -269,7 +342,7 @@ export default function Analytics() {
             paymentRevenue,
             netRevenue,
         };
-    }, [invoices, isToday, isWithinDays, parseDate, products, returnsData]);
+    }, [invoices, invoiceByCode, products, returnsData]);
 
     const revenueTrend = useMemo(() => {
         const map = new Map();
@@ -290,20 +363,39 @@ export default function Analytics() {
             map.set(key, existing);
         });
 
-        return Array.from(map.values()).sort((a, b) => a.day.localeCompare(b.day));
-    }, [formatDayLabel, selectedInvoices, toDayKey]);
+        const selectedReturnMap = new Map();
+        selectedReturns.forEach((r) => {
+            const key = toDayKey(r.created_at);
+            if (!key) return;
+            selectedReturnMap.set(
+                key,
+                (selectedReturnMap.get(key) || 0) + Number(r.refund_amount || 0)
+            );
+        });
+
+        return Array.from(map.values())
+            .map((row) => ({
+                ...row,
+                revenue: Math.max(row.revenue - Number(selectedReturnMap.get(row.day) || 0), 0),
+            }))
+            .sort((a, b) => a.day.localeCompare(b.day));
+    }, [selectedInvoices, selectedReturns]);
 
     const brandAnalytics = useMemo(() => {
-        const map = new Map();
+        const brandMap = new Map();
+        const barcodeToBrand = new Map();
+        const barcodeToPrice = new Map();
 
         selectedItems.forEach((item) => {
-            const brand =
-                item.brand || productById.get(item.product_id)?.brand || "Unknown";
+            const brand = item.brand || productById.get(item.product_id)?.brand || "Unknown";
+            const barcode = String(item.barcode || productById.get(item.product_id)?.barcode || "-");
             const qty = Number(item.quantity || 0);
-            const amount =
-                Number(item.subtotal || 0) || qty * Number(item.price || 0);
+            const amount = Number(item.subtotal || 0) || qty * Number(item.price || 0);
 
-            const existing = map.get(brand) || {
+            barcodeToBrand.set(barcode, brand);
+            barcodeToPrice.set(barcode, Number(item.price || 0) || Number(item.subtotal || 0) / (qty || 1));
+
+            const existing = brandMap.get(brand) || {
                 brand,
                 qty: 0,
                 revenue: 0,
@@ -311,11 +403,29 @@ export default function Analytics() {
 
             existing.qty += qty;
             existing.revenue += amount;
-            map.set(brand, existing);
+            brandMap.set(brand, existing);
         });
 
-        return Array.from(map.values()).sort((a, b) => b.revenue - a.revenue);
-    }, [productById, selectedItems]);
+        selectedReturns.forEach((r) => {
+            const barcode = String(r.barcode || "-");
+            const brand = barcodeToBrand.get(barcode) || productByBarcode.get(barcode)?.brand || "Unknown";
+            const price = barcodeToPrice.get(barcode) || Number(r.refund_amount || 0) / (Number(r.quantity || 1) || 1);
+            const qty = Number(r.quantity || 0);
+            const amount = Number(r.refund_amount || qty * price || 0);
+
+            const existing = brandMap.get(brand) || {
+                brand,
+                qty: 0,
+                revenue: 0,
+            };
+
+            existing.qty = Math.max(existing.qty - qty, 0);
+            existing.revenue = Math.max(existing.revenue - amount, 0);
+            brandMap.set(brand, existing);
+        });
+
+        return Array.from(brandMap.values()).sort((a, b) => b.revenue - a.revenue);
+    }, [productByBarcode, productById, selectedItems, selectedReturns]);
 
     const topProducts = useMemo(() => {
         const map = new Map();
@@ -349,8 +459,25 @@ export default function Analytics() {
             map.set(productId, existing);
         });
 
-        return Array.from(map.values()).sort((a, b) => b.qty - a.qty);
-    }, [productById, selectedItems]);
+        selectedReturns.forEach((r) => {
+            const barcode = String(r.barcode || "-");
+            const matched = Array.from(map.values()).find(
+                (x) => String(x.barcode || "") === barcode
+            );
+
+            if (!matched) return;
+
+            const qty = Number(r.quantity || 0);
+            const refund = Number(r.refund_amount || 0);
+
+            matched.qty = Math.max(matched.qty - qty, 0);
+            matched.revenue = Math.max(matched.revenue - refund, 0);
+        });
+
+        return Array.from(map.values())
+            .sort((a, b) => b.qty - a.qty)
+            .filter((item) => item.qty > 0 || item.revenue > 0);
+    }, [productById, selectedItems, selectedReturns]);
 
     const paymentAnalytics = useMemo(() => {
         return Object.entries(totals.paymentCount)
@@ -365,10 +492,10 @@ export default function Analytics() {
     const returnAnalytics = useMemo(() => {
         const accepted = returnsData.filter((r) => r.status === "Accepted").length;
         const rejected = returnsData.filter((r) => r.status === "Rejected").length;
-        const totalRefund = returnsData.reduce(
-            (sum, item) => sum + Number(item.refund_amount || 0),
-            0
-        );
+        const totalRefund = returnsData
+            .filter(isAcceptedReturn)
+            .reduce((sum, item) => sum + Number(item.refund_amount || 0), 0);
+
         const topReturned = [...selectedReturns]
             .sort((a, b) => Number(b.quantity || 0) - Number(a.quantity || 0))
             .slice(0, 8);
