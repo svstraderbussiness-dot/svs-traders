@@ -26,7 +26,7 @@ export default function Settings() {
     };
 
     const toggleField = (field) => {
-        liveUpdate(field, !settings[field]);
+        liveUpdate(field, !Boolean(settings?.[field]));
     };
 
     const handleSave = async (e) => {
@@ -93,6 +93,12 @@ export default function Settings() {
         </button>
     );
 
+    const numberField = (key, fallback = 0) => {
+        const raw = settings?.[key];
+        const value = raw === undefined || raw === null || raw === "" ? fallback : raw;
+        return Number.isFinite(Number(value)) ? Number(value) : fallback;
+    };
+
     return (
         <div className="min-h-screen bg-[#061b4d] text-white p-4 lg:p-6">
             <div className="mx-auto max-w-[1600px]">
@@ -148,10 +154,14 @@ export default function Settings() {
                     >
                         <div className="grid gap-4">
                             <div>
-                                <label className="mb-2 block text-sm text-white/70">Business Name</label>
+                                <label className="mb-2 block text-sm text-white/70">
+                                    Business Name
+                                </label>
                                 <input
-                                    value={settings.business_name}
-                                    onChange={(e) => liveUpdate("business_name", e.target.value)}
+                                    value={settings?.business_name ?? ""}
+                                    onChange={(e) =>
+                                        liveUpdate("business_name", e.target.value)
+                                    }
                                     className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
                                     placeholder="SVS TRADERS"
                                 />
@@ -159,19 +169,27 @@ export default function Settings() {
 
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">Owner Name</label>
+                                    <label className="mb-2 block text-sm text-white/70">
+                                        Owner Name
+                                    </label>
                                     <input
-                                        value={settings.owner_name}
-                                        onChange={(e) => liveUpdate("owner_name", e.target.value)}
+                                        value={settings?.owner_name ?? ""}
+                                        onChange={(e) =>
+                                            liveUpdate("owner_name", e.target.value)
+                                        }
                                         className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
                                         placeholder="KARUN"
                                     />
                                 </div>
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">Phone</label>
+                                    <label className="mb-2 block text-sm text-white/70">
+                                        Phone
+                                    </label>
                                     <input
-                                        value={settings.phone}
-                                        onChange={(e) => liveUpdate("phone", e.target.value)}
+                                        value={settings?.phone ?? ""}
+                                        onChange={(e) =>
+                                            liveUpdate("phone", e.target.value)
+                                        }
                                         className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
                                         placeholder="9705583982"
                                     />
@@ -179,6 +197,21 @@ export default function Settings() {
                             </div>
 
 
+
+                            <div>
+                                <label className="mb-2 block text-sm text-white/70">
+                                    Email
+                                </label>
+                                <input
+                                    type="email"
+                                    value={settings?.email ?? ""}
+                                    onChange={(e) =>
+                                        liveUpdate("email", e.target.value)
+                                    }
+                                    className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                    placeholder="store@example.com"
+                                />
+                            </div>
                         </div>
                     </Section>
 
@@ -189,24 +222,32 @@ export default function Settings() {
                         <div className="grid gap-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">Default Payment Mode</label>
+                                    <label className="mb-2 block text-sm text-white/70">
+                                        Default Payment Mode
+                                    </label>
                                     <select
-                                        value={settings.default_payment_mode}
-                                        onChange={(e) => liveUpdate("default_payment_mode", e.target.value)}
+                                        value={settings?.default_payment_mode ?? "Cash"}
+                                        onChange={(e) =>
+                                            liveUpdate("default_payment_mode", e.target.value)
+                                        }
                                         className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
                                     >
-                                        <option>Cash</option>
-                                        <option>Card</option>
-                                        <option>UPI</option>
-                                        <option>Credit</option>
+                                        <option value="Cash">Cash</option>
+                                        <option value="Card">Card</option>
+                                        <option value="UPI">UPI</option>
+                                        <option value="Credit">Credit</option>
                                     </select>
                                 </div>
 
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">Default Discount Type</label>
+                                    <label className="mb-2 block text-sm text-white/70">
+                                        Default Discount Type
+                                    </label>
                                     <select
-                                        value={settings.default_discount_type}
-                                        onChange={(e) => liveUpdate("default_discount_type", e.target.value)}
+                                        value={settings?.default_discount_type ?? "₹"}
+                                        onChange={(e) =>
+                                            liveUpdate("default_discount_type", e.target.value)
+                                        }
                                         className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
                                     >
                                         <option value="₹">₹ Amount</option>
@@ -218,17 +259,18 @@ export default function Settings() {
                             <div className="grid gap-4 md:grid-cols-2">
                                 <Toggle
                                     label="Auto Invoice Number"
-                                    checked={settings.auto_invoice}
+                                    checked={Boolean(settings?.auto_invoice)}
                                     onToggle={() => toggleField("auto_invoice")}
                                     hint="Automatically create the next invoice code."
                                 />
                                 <Toggle
                                     label="WhatsApp Receipt"
-                                    checked={settings.whatsapp_receipt}
+                                    checked={Boolean(settings?.whatsapp_receipt)}
                                     onToggle={() => toggleField("whatsapp_receipt")}
                                     hint="Send a receipt link on WhatsApp."
                                 />
                             </div>
+
                         </div>
                     </Section>
 
@@ -240,16 +282,27 @@ export default function Settings() {
                             <div className="grid gap-4 md:grid-cols-2">
                                 <Toggle
                                     label="Barcode Scan Mode"
-                                    checked={settings.barcode_scan_mode}
+                                    checked={Boolean(settings?.barcode_scan_mode)}
                                     onToggle={() => toggleField("barcode_scan_mode")}
                                     hint="Prioritize barcode lookup in billing."
                                 />
                                 <Toggle
                                     label="Auto Restore Returned Stock"
-                                    checked={settings.auto_restore_return_stock}
+                                    checked={Boolean(settings?.auto_restore_return_stock)}
                                     onToggle={() => toggleField("auto_restore_return_stock")}
                                     hint="Accepted returns go back into inventory."
                                 />
+                            </div>
+
+
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Toggle
+                                    label="Auto Print Invoice"
+                                    checked={Boolean(settings?.auto_print_invoice)}
+                                    onToggle={() => toggleField("auto_print_invoice")}
+                                    hint="Automatically trigger receipt print after billing."
+                                />
+
                             </div>
                         </div>
                     </Section>
@@ -262,23 +315,40 @@ export default function Settings() {
                             <div className="grid gap-4 md:grid-cols-2">
                                 <Toggle
                                     label="Compact View"
-                                    checked={settings.compact_view}
+                                    checked={Boolean(settings?.compact_view)}
                                     onToggle={() => toggleField("compact_view")}
                                     hint="Tighter spacing for data-heavy screens."
                                 />
                                 <Toggle
                                     label="Sidebar Collapsed"
-                                    checked={settings.sidebar_collapsed}
+                                    checked={Boolean(settings?.sidebar_collapsed)}
                                     onToggle={() => toggleField("sidebar_collapsed")}
                                     hint="Change sidebar width immediately."
                                 />
                             </div>
 
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <Toggle
+                                    label="Dark Mode"
+                                    checked={Boolean(settings?.dark_mode)}
+                                    onToggle={() => toggleField("dark_mode")}
+                                    hint="Keep the app in dark appearance."
+                                />
+                                <Toggle
+                                    label="Show Dashboard Summary"
+                                    checked={Boolean(settings?.show_dashboard_summary)}
+                                    onToggle={() => toggleField("show_dashboard_summary")}
+                                    hint="Display summary cards on dashboard."
+                                />
+                            </div>
+
                             <div>
-                                <label className="mb-3 block text-sm text-white/70">Accent Theme</label>
+                                <label className="mb-3 block text-sm text-white/70">
+                                    Accent Theme
+                                </label>
                                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                                     {["Blue", "Green", "Purple", "Orange"].map((theme) => {
-                                        const active = settings.accent_theme === theme;
+                                        const active = settings?.accent_theme === theme;
                                         return (
                                             <button
                                                 key={theme}
@@ -289,7 +359,9 @@ export default function Settings() {
                                                     : "border-white/10 bg-white/5 hover:bg-white/10"
                                                     }`}
                                                 style={
-                                                    active ? { boxShadow: `0 0 0 1px ${accentColor} inset` } : undefined
+                                                    active
+                                                        ? { boxShadow: `0 0 0 1px ${accentColor} inset` }
+                                                        : undefined
                                                 }
                                             >
                                                 {theme}

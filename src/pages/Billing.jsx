@@ -26,7 +26,9 @@ function parseDbDate(dateValue) {
         return new Date(raw.replace(" ", "T"));
     }
 
-    const normalized = raw.includes("T") ? `${raw}Z` : `${raw.replace(" ", "T")}Z`;
+    const normalized = raw.includes("T")
+        ? `${raw}Z`
+        : `${raw.replace(" ", "T")}Z`;
     return new Date(normalized);
 }
 
@@ -65,10 +67,6 @@ function buildInvoiceCode(prefix = "SVS") {
     return `${prefix}-${datePart}-${randomPart}`;
 }
 
-function isAcceptedReturn(row) {
-    return String(row?.status || "").toLowerCase() === "accepted";
-}
-
 export default function Billing() {
     const { settings } = useTheme();
 
@@ -104,8 +102,8 @@ export default function Billing() {
     const [paymentMode, setPaymentMode] = useState(defaultPaymentMode);
     const [markAsPaid, setMarkAsPaid] = useState(true);
 
-    const [discountType, setDiscountType] = useState(defaultDiscountType);
-    const [discountValue, setDiscountValue] = useState("");
+    const [billDiscountType, setBillDiscountType] = useState(defaultDiscountType);
+    const [billDiscountValue, setBillDiscountValue] = useState("");
 
     const [manualInvoiceCode, setManualInvoiceCode] = useState("");
 
@@ -116,6 +114,8 @@ export default function Billing() {
     const [historyLoading, setHistoryLoading] = useState(false);
     const [todayInvoices, setTodayInvoices] = useState([]);
     const [message, setMessage] = useState("");
+
+    const [printInvoice, setPrintInvoice] = useState(null);
 
     const [liveTime, setLiveTime] = useState(
         new Date().toLocaleTimeString("en-IN", {
@@ -146,7 +146,7 @@ export default function Billing() {
     }, [defaultPaymentMode]);
 
     useEffect(() => {
-        setDiscountType(defaultDiscountType);
+        setBillDiscountType(defaultDiscountType);
     }, [defaultDiscountType]);
 
     useEffect(() => {
@@ -167,26 +167,82 @@ export default function Billing() {
         }
     }, [settings.auto_invoice]);
 
-    const subtotal = useMemo(() => {
+    useEffect(() => {
+        const handleAfterPrint = () => {
+            setPrintInvoice(null);
+        };
+
+        window.addEventListener("afterprint", handleAfterPrint);
+        return () => window.removeEventListener("afterprint", handleAfterPrint);
+    }, []);
+
+    useEffect(() => {
+        if (!printInvoice) return;
+
+        const timer = setTimeout(() => {
+            window.print();
+        }, 400);
+
+        return () => clearTimeout(timer);
+    }, [printInvoice]);
+
+    const getLineGross = (item) => {
+        return Number(item.quantity || 0) * Number(item.mrp || 0);
+    };
+
+    const getLineDiscountAmount = (item) => {
+        const gross = getLineGross(item);
+        const value = Number(item.discountValue || 0);
+
+        if (!value || gross <= 0) return 0;
+
+        if (item.discountType === "percent") {
+            const percent = Math.min(Math.max(value, 0), 100);
+            return (gross * percent) / 100;
+        }
+
+        return Math.min(Math.max(value, 0), gross);
+    };
+
+    const getLineNet = (item) => {
+        return Math.max(getLineGross(item) - getLineDiscountAmount(item), 0);
+    };
+
+    const getUnitNetPrice = (item) => {
+        const qty = Number(item.quantity || 0);
+        if (qty <= 0) return 0;
+        return getLineNet(item) / qty;
+    };
+
+    const itemsGrossTotal = useMemo(() => {
         return cart.reduce(
-            (sum, item) => sum + Number(item.quantity || 0) * Number(item.selling_price || 0),
+            (sum, item) => sum + Number(item.quantity || 0) * Number(item.mrp || 0),
             0
         );
     }, [cart]);
 
-    const discountAmount = useMemo(() => {
-        const value = Number(discountValue || 0);
+    const itemDiscountTotal = useMemo(() => {
+        return cart.reduce((sum, item) => sum + getLineDiscountAmount(item), 0);
+    }, [cart]);
+
+    const itemsNetTotal = useMemo(() => {
+        return cart.reduce((sum, item) => sum + getLineNet(item), 0);
+    }, [cart]);
+
+    const billDiscountAmount = useMemo(() => {
+        const value = Number(billDiscountValue || 0);
         if (!value) return 0;
 
-        if (discountType === "percent") {
+        if (billDiscountType === "percent") {
             const percent = Math.min(Math.max(value, 0), 100);
-            return (subtotal * percent) / 100;
+            return (itemsNetTotal * percent) / 100;
         }
 
-        return Math.min(Math.max(value, 0), subtotal);
-    }, [discountType, discountValue, subtotal]);
+        return Math.min(Math.max(value, 0), itemsNetTotal);
+    }, [billDiscountType, billDiscountValue, itemsNetTotal]);
 
-    const finalTotal = Math.max(subtotal - discountAmount, 0);
+    const totalDiscountAmount = itemDiscountTotal + billDiscountAmount;
+    const finalTotal = Math.max(itemsNetTotal - billDiscountAmount, 0);
 
     const paymentStatus = useMemo(() => {
         if (paymentMode === "Credit") return "Pending";
@@ -220,13 +276,14 @@ export default function Billing() {
         setCustomerName("");
         setCustomerPhone("");
         setCustomerEmail("");
-        setDiscountValue("");
+        setBillDiscountValue("");
         setManualInvoiceCode("");
         setPaymentMode(defaultPaymentMode);
-        setDiscountType(defaultDiscountType);
+        setBillDiscountType(defaultDiscountType);
         setMarkAsPaid(true);
         setSuccessInvoice(null);
         setMessage("");
+        setPrintInvoice(null);
     };
 
     const addToCart = (product) => {
@@ -234,7 +291,7 @@ export default function Billing() {
             const existing = prev.find((item) => item.id === product.id);
             const stock = Number(product.quantity || 0);
 
-            if (stock <= 0 || product.is_active === false) {
+            if (stock <= 0) {
                 alert("Product is not available.");
                 return prev;
             }
@@ -257,15 +314,26 @@ export default function Billing() {
                 {
                     id: product.id,
                     barcode: product.barcode || "-",
-                    product_name: product.product_name || product.product_code || "Product",
+                    product_name: product.product_code || "Product",
                     brand: product.brand || "",
                     size: product.size || "",
                     product_code: product.product_code || "",
                     style_code: product.style_code || "",
-                    selling_price: Number(product.selling_price ?? product.mrp ?? 0),
                     mrp: Number(product.mrp ?? 0),
                     stock,
                     quantity: 1,
+                    discountType: defaultDiscountType,
+                    discountValue: "",
+                    originalProduct: {
+                        barcode: product.barcode || "",
+                        date: product.date || "",
+                        style_code: product.style_code || "",
+                        size: product.size || "",
+                        product_code: product.product_code || "",
+                        quantity: Number(product.quantity || 0),
+                        mrp: Number(product.mrp || 0),
+                        brand: product.brand || "",
+                    },
                 },
             ];
         });
@@ -286,6 +354,24 @@ export default function Billing() {
         );
     };
 
+    const updateCartDiscount = (id, field, value) => {
+        setCart((prev) =>
+            prev.map((item) => {
+                if (item.id !== id) return item;
+
+                if (field === "discountType") {
+                    return { ...item, discountType: value };
+                }
+
+                if (field === "discountValue") {
+                    return { ...item, discountValue: value };
+                }
+
+                return item;
+            })
+        );
+    };
+
     const removeFromCart = (id) => {
         setCart((prev) => prev.filter((item) => item.id !== id));
     };
@@ -301,12 +387,11 @@ export default function Billing() {
         setSearching(true);
 
         try {
-            if (settings.barcode_scan_mode && exactAdd) {
+            if (exactAdd) {
                 const { data: exactProduct, error: exactError } = await supabase
                     .from("products")
                     .select("*")
                     .eq("barcode", q)
-                    .eq("is_active", true)
                     .maybeSingle();
 
                 if (exactError) throw exactError;
@@ -321,10 +406,7 @@ export default function Billing() {
             const { data, error } = await supabase
                 .from("products")
                 .select("*")
-                .eq("is_active", true)
-                .or(
-                    `barcode.ilike.%${q}%,product_name.ilike.%${q}%,product_code.ilike.%${q}%,style_code.ilike.%${q}%`
-                )
+                .or(`barcode.ilike.%${q}%,product_code.ilike.%${q}%,style_code.ilike.%${q}%`)
                 .order("created_at", { ascending: false })
                 .limit(12);
 
@@ -610,7 +692,9 @@ export default function Billing() {
             return;
         }
 
-        const invoiceCode = settings.auto_invoice ? buildInvoiceCode(invoicePrefix) : manualInvoiceCode.trim();
+        const invoiceCode = settings.auto_invoice
+            ? buildInvoiceCode(invoicePrefix)
+            : manualInvoiceCode.trim();
 
         if (!invoiceCode) {
             alert("Enter invoice code.");
@@ -622,7 +706,7 @@ export default function Billing() {
         let customerId = null;
         let createdInvoice = null;
         const deductedProducts = [];
-        const lowStockWarnings = [];
+        const printableItems = cart.map((item) => ({ ...item }));
 
         try {
             for (const item of cart) {
@@ -630,7 +714,6 @@ export default function Billing() {
                     .from("products")
                     .select("*")
                     .eq("id", item.id)
-                    .eq("is_active", true)
                     .maybeSingle();
 
                 if (latestError) throw latestError;
@@ -640,7 +723,9 @@ export default function Billing() {
                 }
 
                 if (Number(latestProduct.quantity || 0) < item.quantity) {
-                    throw new Error(`Not enough stock for ${item.product_name}. Available: ${latestProduct.quantity}`);
+                    throw new Error(
+                        `Not enough stock for ${item.product_name}. Available: ${latestProduct.quantity}`
+                    );
                 }
             }
 
@@ -665,40 +750,45 @@ export default function Billing() {
                         const { error: customerUpdateError } = await supabase
                             .from("customers")
                             .update({
-                                customer_name: customerName.trim() || existingCustomer.customer_name,
+                                customer_name:
+                                    customerName.trim() || existingCustomer.customer_name,
                                 email: customerEmail.trim() || existingCustomer.email,
                             })
                             .eq("id", customerId);
 
                         if (customerUpdateError) throw customerUpdateError;
                     } else {
-                        const { data: newCustomer, error: customerInsertError } = await supabase
-                            .from("customers")
-                            .insert([
-                                {
-                                    customer_name: customerName.trim() || "Walk-in Customer",
-                                    phone_number: normalizedPhone,
-                                    email: customerEmail.trim() || null,
-                                },
-                            ])
-                            .select("*")
-                            .single();
+                        const { data: newCustomer, error: customerInsertError } =
+                            await supabase
+                                .from("customers")
+                                .insert([
+                                    {
+                                        customer_name:
+                                            customerName.trim() || "Walk-in Customer",
+                                        phone_number: normalizedPhone,
+                                        email: customerEmail.trim() || null,
+                                    },
+                                ])
+                                .select("*")
+                                .single();
 
                         if (customerInsertError) throw customerInsertError;
                         customerId = newCustomer.id;
                     }
                 } else {
-                    const { data: newCustomer, error: customerInsertError } = await supabase
-                        .from("customers")
-                        .insert([
-                            {
-                                customer_name: customerName.trim() || "Walk-in Customer",
-                                phone_number: null,
-                                email: customerEmail.trim() || null,
-                            },
-                        ])
-                        .select("*")
-                        .single();
+                    const { data: newCustomer, error: customerInsertError } =
+                        await supabase
+                            .from("customers")
+                            .insert([
+                                {
+                                    customer_name:
+                                        customerName.trim() || "Walk-in Customer",
+                                    phone_number: null,
+                                    email: customerEmail.trim() || null,
+                                },
+                            ])
+                            .select("*")
+                            .single();
 
                     if (customerInsertError) throw customerInsertError;
                     customerId = newCustomer.id;
@@ -711,8 +801,8 @@ export default function Billing() {
                     {
                         invoice_code: invoiceCode,
                         customer_id: customerId,
-                        subtotal,
-                        discount_amount: discountAmount,
+                        subtotal: itemsGrossTotal,
+                        discount_amount: totalDiscountAmount,
                         final_amount: finalTotal,
                         payment_mode: paymentMode,
                         payment_status: paymentStatus,
@@ -730,10 +820,10 @@ export default function Billing() {
                 invoice_id: invoiceRow.id,
                 product_id: item.id,
                 quantity: item.quantity,
-                price: Number(item.selling_price || 0),
-                subtotal: Number(item.selling_price || 0) * item.quantity,
+                price: Number(getUnitNetPrice(item)),
+                subtotal: Number(getLineNet(item)),
                 barcode: item.barcode,
-                product_name: item.product_name,
+                product_name: item.product_name || item.product_code || item.style_code || "Product",
                 brand: item.brand,
             }));
 
@@ -743,73 +833,96 @@ export default function Billing() {
             for (const item of cart) {
                 const { data: latestProduct, error: latestError } = await supabase
                     .from("products")
-                    .select("id, quantity")
+                    .select("*")
                     .eq("id", item.id)
                     .maybeSingle();
 
                 if (latestError) throw latestError;
 
-                const newQty = Math.max(
-                    Number(latestProduct?.quantity || 0) - Number(item.quantity || 0),
-                    0
-                );
+                const currentQty = Number(latestProduct?.quantity || 0);
+                const soldQty = Number(item.quantity || 0);
+                const newQty = currentQty - soldQty;
 
-                if (newQty === 0) {
-                    const { error: updateError } = await supabase
+                let updateError = null;
+
+                if (newQty <= 0) {
+                    const { error } = await supabase
                         .from("products")
-                        .update({
-                            quantity: 0,
-                            is_active: false,
-                        })
+                        .delete()
                         .eq("id", item.id);
 
-                    if (updateError) throw updateError;
+                    updateError = error;
                 } else {
-                    const { error: updateError } = await supabase
+                    const { error } = await supabase
                         .from("products")
                         .update({
                             quantity: newQty,
-                            is_active: true,
                         })
                         .eq("id", item.id);
 
-                    if (updateError) throw updateError;
+                    updateError = error;
                 }
+
+                if (updateError) throw updateError;
 
                 deductedProducts.push({
                     id: item.id,
                     quantity: item.quantity,
+                    originalProduct: item.originalProduct || {
+                        barcode: item.barcode || "",
+                        date: "",
+                        style_code: item.style_code || "",
+                        size: item.size || "",
+                        product_code: item.product_code || "",
+                        quantity: 0,
+                        mrp: item.mrp || 0,
+                        brand: item.brand || "",
+                    },
                 });
-
-                if (newQty <= lowStockThreshold) {
-                    lowStockWarnings.push(`${item.product_name} (${newQty})`);
-                }
             }
 
-            const receiptLines = cart
-                .map(
-                    (item, index) =>
-                        `${index + 1}. ${item.product_name} x ${item.quantity} = ₹${money(
-                            Number(item.selling_price || 0) * Number(item.quantity || 0)
-                        )}`
-                )
+            const receiptLines = printableItems
+                .map((item, index) => {
+                    const lineGross = getLineGross(item);
+                    const lineDiscount = getLineDiscountAmount(item);
+                    const lineNet = getLineNet(item);
+
+                    const discountText =
+                        Number(item.discountValue || 0) > 0
+                            ? item.discountType === "percent"
+                                ? `${money(item.discountValue)}% Off`
+                                : `₹${money(item.discountValue)} Off`
+                            : "No Discount";
+
+                    return `${index + 1}x ${item.product_name} — ₹${money(
+                        lineNet
+                    )} (MRP: ₹${money(lineGross)} | ${discountText})`;
+                })
                 .join("\n");
 
             const receiptText = `Hello ${customerName.trim() || "Customer"},
 
-Thank you for shopping at ${settings.business_name || "SVS TRADERS"}.
+Thank you for shopping with ${settings.business_name || "2DudesBevdass (SVS TRADERS)"}
 
-Invoice: ${invoiceCode}
+Invoice Details:
+
+Invoice No: ${invoiceCode}
+
 Payment Mode: ${paymentMode}
+
 Status: ${paymentStatus}
+
+Order Summary:
 
 ${receiptLines}
 
-Subtotal: ₹${money(subtotal)}
-Discount: ₹${money(discountAmount)}
-Final Amount: ₹${money(finalTotal)}
+Items Total: ₹${money(itemsGrossTotal)}
 
-Thank you for your purchase.`;
+Total Discount: ₹${money(totalDiscountAmount)}
+
+Final Amount Paid: ₹${money(finalTotal)}
+
+Thank you for your purchase! Please visit again.`;
 
             if (settings.whatsapp_receipt && normalizePhone(customerPhone)) {
                 openWhatsAppReceipt(customerPhone, receiptText);
@@ -830,9 +943,10 @@ Thank you for your purchase.`;
                 customerName: customerName.trim(),
                 phone: normalizePhone(customerPhone),
                 email: customerEmail.trim() || "",
-                items: cart,
-                subtotal,
-                discountAmount,
+                items: printableItems,
+                itemsGrossTotal,
+                itemDiscountTotal,
+                billDiscountAmount,
                 finalTotal,
                 paymentMode,
                 paymentStatus,
@@ -841,25 +955,38 @@ Thank you for your purchase.`;
             setSuccessInvoice({
                 invoiceCode,
                 finalTotal,
-                subtotal,
-                discountAmount,
+                itemsGrossTotal,
+                itemDiscountTotal,
+                billDiscountAmount,
                 paymentMode,
                 paymentStatus,
                 customerName: customerName.trim(),
                 phone: normalizePhone(customerPhone),
-                lowStockWarnings,
+            });
+
+            setPrintInvoice({
+                invoiceCode,
+                customerName: customerName.trim(),
+                items: printableItems,
+                itemsGrossTotal,
+                itemDiscountTotal,
+                billDiscountAmount,
+                finalTotal,
+                paymentMode,
+                paymentStatus,
+                invoiceDate: new Date().toLocaleString("en-IN"),
             });
 
             setCart([]);
             setSearchQuery("");
             setSearchResults([]);
-            setDiscountValue("");
+            setBillDiscountValue("");
             setManualInvoiceCode("");
             setCustomerName("");
             setCustomerPhone("");
             setCustomerEmail("");
             setPaymentMode(defaultPaymentMode);
-            setDiscountType(defaultDiscountType);
+            setBillDiscountType(defaultDiscountType);
             setMarkAsPaid(true);
 
             await loadTodayInvoices();
@@ -875,21 +1002,46 @@ Thank you for your purchase.`;
                 }
 
                 for (const item of deductedProducts) {
-                    const { data: product } = await supabase
+                    const original = item.originalProduct || null;
+
+                    if (!original) continue;
+
+                    const { data: existingProduct, error: productFetchError } = await supabase
                         .from("products")
-                        .select("id, quantity")
+                        .select("*")
                         .eq("id", item.id)
                         .maybeSingle();
 
-                    if (product) {
-                        const restoredQty = Number(product.quantity || 0) + Number(item.quantity || 0);
-                        await supabase
+                    if (productFetchError) throw productFetchError;
+
+                    if (existingProduct) {
+                        const restoredQty =
+                            Number(existingProduct.quantity || 0) + Number(item.quantity || 0);
+
+                        const { error: restoreError } = await supabase
                             .from("products")
                             .update({
                                 quantity: restoredQty,
-                                is_active: true,
                             })
                             .eq("id", item.id);
+
+                        if (restoreError) throw restoreError;
+                    } else {
+                        const { error: insertError } = await supabase.from("products").insert([
+                            {
+                                id: item.id,
+                                barcode: original.barcode || "",
+                                date: original.date || "",
+                                style_code: original.style_code || "",
+                                size: original.size || "",
+                                product_code: original.product_code || "",
+                                quantity: Number(item.quantity || 0),
+                                mrp: Number(original.mrp || 0),
+                                brand: original.brand || "",
+                            },
+                        ]);
+
+                        if (insertError) throw insertError;
                     }
                 }
             } catch (rollbackError) {
@@ -918,20 +1070,46 @@ Thank you for your purchase.`;
             for (const item of lastInvoice.items) {
                 const { data: product, error: productError } = await supabase
                     .from("products")
-                    .select("id, quantity")
+                    .select("*")
                     .eq("id", item.id)
                     .maybeSingle();
 
                 if (productError) throw productError;
 
+                const original = item.originalProduct || {
+                    barcode: item.barcode || "",
+                    date: "",
+                    style_code: item.style_code || "",
+                    size: item.size || "",
+                    product_code: item.product_code || "",
+                    quantity: 0,
+                    mrp: item.mrp || 0,
+                    brand: item.brand || "",
+                };
+
                 if (product) {
+                    const restoredQty = Number(product.quantity || 0) + Number(item.quantity || 0);
+
                     await supabase
                         .from("products")
                         .update({
-                            quantity: Number(product.quantity || 0) + Number(item.quantity || 0),
-                            is_active: true,
+                            quantity: restoredQty,
                         })
                         .eq("id", item.id);
+                } else {
+                    await supabase.from("products").insert([
+                        {
+                            id: item.id,
+                            barcode: original.barcode || "",
+                            date: original.date || "",
+                            style_code: original.style_code || "",
+                            size: original.size || "",
+                            product_code: original.product_code || "",
+                            quantity: Number(item.quantity || 0),
+                            mrp: Number(original.mrp || 0),
+                            brand: original.brand || "",
+                        },
+                    ]);
                 }
             }
 
@@ -954,6 +1132,35 @@ Thank you for your purchase.`;
 
     return (
         <div className="min-h-screen bg-[#061b4d] text-white p-4 lg:p-6">
+            <style>{`
+                @media print {
+                    body * {
+                        visibility: hidden !important;
+                    }
+
+                    #thermal-bill,
+                    #thermal-bill * {
+                        visibility: visible !important;
+                    }
+
+                    #thermal-bill {
+                        position: absolute !important;
+                        left: 0 !important;
+                        top: 0 !important;
+                        width: 80mm !important;
+                        padding: 6mm !important;
+                        font-family: monospace !important;
+                        color: #000 !important;
+                        background: #fff !important;
+                    }
+
+                    @page {
+                        size: 80mm auto;
+                        margin: 0;
+                    }
+                }
+            `}</style>
+
             <div className="mx-auto max-w-[1600px]">
                 <div className="mb-6 lg:mb-8">
                     <h1 className="text-4xl lg:text-5xl font-bold">Billing</h1>
@@ -980,7 +1187,7 @@ Thank you for your purchase.`;
                                         value={searchQuery}
                                         onChange={(e) => setSearchQuery(e.target.value)}
                                         onKeyDown={onSearchKeyDown}
-                                        placeholder="Scan or type barcode / product name / product code"
+                                        placeholder="Scan or type barcode / product code / style code"
                                         className="w-full bg-[#101725] border border-white/10 rounded-2xl px-4 py-3 outline-none text-white placeholder:text-white/40"
                                     />
                                 </div>
@@ -1000,8 +1207,8 @@ Thank you for your purchase.`;
                                     <div className="text-xl font-semibold mt-1">{cart.length}</div>
                                 </div>
                                 <div className="rounded-2xl bg-white/5 border border-white/5 p-3">
-                                    <div className="text-white/50">Subtotal</div>
-                                    <div className="text-xl font-semibold mt-1">₹{money(subtotal)}</div>
+                                    <div className="text-white/50">Items Total</div>
+                                    <div className="text-xl font-semibold mt-1">₹{money(itemsGrossTotal)}</div>
                                 </div>
                                 <div className="rounded-2xl bg-white/5 border border-white/5 p-3">
                                     <div className="text-white/50">Final Total</div>
@@ -1034,9 +1241,11 @@ Thank you for your purchase.`;
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div>
                                                         <div className="font-bold text-lg leading-tight">
-                                                            {product.product_name || product.product_code || "-"}
+                                                            {product.product_code || "Product"}
                                                         </div>
-                                                        <div className="text-white/50 text-sm mt-1">{product.barcode}</div>
+                                                        <div className="text-white/50 text-sm mt-1">
+                                                            {product.barcode}
+                                                        </div>
                                                     </div>
 
                                                     <div className="text-right text-sm text-white/60">
@@ -1048,19 +1257,20 @@ Thank you for your purchase.`;
                                                 <div className="grid grid-cols-2 gap-3 mt-4 text-sm">
                                                     <div className="rounded-2xl bg-black/20 p-3">
                                                         <div className="text-white/40">Stock</div>
-                                                        <div className={`text-lg font-semibold ${isLowStock ? "text-red-400" : ""}`}>
+                                                        <div
+                                                            className={`text-lg font-semibold ${isLowStock ? "text-red-400" : ""
+                                                                }`}
+                                                        >
                                                             {stock}
                                                         </div>
                                                     </div>
                                                     <div className="rounded-2xl bg-black/20 p-3">
-                                                        <div className="text-white/40">Price</div>
+                                                        <div className="text-white/40">MRP</div>
                                                         <div className="text-lg font-semibold">
-                                                            ₹{money(product.selling_price || product.mrp)}
+                                                            ₹{money(product.mrp)}
                                                         </div>
                                                     </div>
                                                 </div>
-
-                                                {isLowStock ? <div className="mt-3 text-xs text-red-300">Low stock</div> : null}
 
                                                 <button
                                                     onClick={() => addToCart(product)}
@@ -1189,12 +1399,15 @@ Thank you for your purchase.`;
                                         <option value="Cash">Cash</option>
                                         <option value="UPI">UPI</option>
                                         <option value="Card">Card</option>
+                                        <option value="Cash & UPI">Cash & UPI</option>
+                                        <option value="Card & UPI">Card & UPI</option>
+                                        <option value="Card & Cash">Card & Cash</option>
                                         {settings.credit_billing ? <option value="Credit">Credit</option> : null}
                                     </select>
 
                                     <select
-                                        value={discountType}
-                                        onChange={(e) => setDiscountType(e.target.value)}
+                                        value={billDiscountType}
+                                        onChange={(e) => setBillDiscountType(e.target.value)}
                                         className="bg-[#101725] border border-white/10 rounded-2xl px-4 py-3 outline-none text-white"
                                     >
                                         <option value="amount">₹ Discount</option>
@@ -1204,9 +1417,13 @@ Thank you for your purchase.`;
 
                                 <input
                                     type="number"
-                                    value={discountValue}
-                                    onChange={(e) => setDiscountValue(e.target.value)}
-                                    placeholder={discountType === "amount" ? "Discount amount" : "Discount percent"}
+                                    value={billDiscountValue}
+                                    onChange={(e) => setBillDiscountValue(e.target.value)}
+                                    placeholder={
+                                        billDiscountType === "amount"
+                                            ? "Bill discount amount"
+                                            : "Bill discount percent"
+                                    }
                                     className="w-full bg-[#101725] border border-white/10 rounded-2xl px-4 py-3 outline-none text-white placeholder:text-white/40"
                                 />
 
@@ -1237,6 +1454,9 @@ Thank you for your purchase.`;
                                 <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
                                     {cart.map((item) => {
                                         const isLowStock = Number(item.stock || 0) <= lowStockThreshold;
+                                        const lineGross = getLineGross(item);
+                                        const lineDiscount = getLineDiscountAmount(item);
+                                        const lineNet = getLineNet(item);
 
                                         return (
                                             <div
@@ -1286,13 +1506,52 @@ Thank you for your purchase.`;
                                                     </div>
 
                                                     <div className="text-right">
-                                                        <div className={`text-sm ${isLowStock ? "text-red-300" : "text-white/50"}`}>
+                                                        <div
+                                                            className={`text-sm ${isLowStock ? "text-red-300" : "text-white/50"
+                                                                }`}
+                                                        >
                                                             Stock: {item.stock}
                                                         </div>
-                                                        <div className="font-semibold">
-                                                            ₹{money(item.quantity * item.selling_price)}
-                                                        </div>
+                                                        <div className="font-semibold">₹{money(lineNet)}</div>
                                                     </div>
+                                                </div>
+
+                                                <div className="mt-4 grid grid-cols-2 gap-3">
+                                                    <select
+                                                        value={item.discountType}
+                                                        onChange={(e) =>
+                                                            updateCartDiscount(
+                                                                item.id,
+                                                                "discountType",
+                                                                e.target.value
+                                                            )
+                                                        }
+                                                        className="bg-[#101725] border border-white/10 rounded-xl px-3 py-2 outline-none text-white text-sm"
+                                                    >
+                                                        <option value="amount">₹ Discount</option>
+                                                        <option value="percent">% Discount</option>
+                                                    </select>
+
+                                                    <input
+                                                        type="number"
+                                                        min="0"
+                                                        value={item.discountValue}
+                                                        onChange={(e) =>
+                                                            updateCartDiscount(
+                                                                item.id,
+                                                                "discountValue",
+                                                                e.target.value
+                                                            )
+                                                        }
+                                                        placeholder="Discount"
+                                                        className="bg-[#101725] border border-white/10 rounded-xl px-3 py-2 outline-none text-white text-sm"
+                                                    />
+                                                </div>
+
+                                                <div className="mt-3 text-xs text-white/55 flex justify-between gap-2">
+                                                    <span>MRP: ₹{money(item.mrp)}</span>
+                                                    <span>Gross: ₹{money(lineGross)}</span>
+                                                    <span>Discount: ₹{money(lineDiscount)}</span>
                                                 </div>
                                             </div>
                                         );
@@ -1306,12 +1565,16 @@ Thank you for your purchase.`;
 
                             <div className="space-y-3 text-sm">
                                 <div className="flex justify-between">
-                                    <span className="text-white/60">Subtotal</span>
-                                    <span>₹{money(subtotal)}</span>
+                                    <span className="text-white/60">Items Total</span>
+                                    <span>₹{money(itemsGrossTotal)}</span>
                                 </div>
                                 <div className="flex justify-between">
-                                    <span className="text-white/60">Discount</span>
-                                    <span>- ₹{money(discountAmount)}</span>
+                                    <span className="text-white/60">Item Discounts</span>
+                                    <span>- ₹{money(itemDiscountTotal)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-white/60">Bill Discount</span>
+                                    <span>- ₹{money(billDiscountAmount)}</span>
                                 </div>
                                 <div className="flex justify-between text-lg font-bold pt-2 border-t border-white/10">
                                     <span>Grand Total</span>
@@ -1335,23 +1598,99 @@ Thank you for your purchase.`;
                                 Undo Last Invoice
                             </button>
 
+                            <button
+                                onClick={clearBill}
+                                className="w-full mt-3 bg-white/10 hover:bg-white/15 transition rounded-2xl py-3 font-semibold"
+                            >
+                                Clear Bill
+                            </button>
+
                             {successInvoice ? (
                                 <div className="mt-5 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 p-4 text-sm">
-                                    <div className="font-bold text-emerald-300">Invoice saved successfully</div>
-                                    <div className="mt-2 text-white/80">{successInvoice.invoiceCode}</div>
-                                    <div className="mt-1 text-white/70">Total: ₹{money(successInvoice.finalTotal)}</div>
-                                    <div className="mt-1 text-white/70">Status: {successInvoice.paymentStatus}</div>
-                                    {successInvoice.lowStockWarnings?.length ? (
-                                        <div className="mt-2 text-red-200">
-                                            Low stock: {successInvoice.lowStockWarnings.join(", ")}
-                                        </div>
-                                    ) : null}
+                                    <div className="font-bold text-emerald-300">
+                                        Invoice saved successfully
+                                    </div>
+                                    <div className="mt-2 text-white/80">
+                                        {successInvoice.invoiceCode}
+                                    </div>
+                                    <div className="mt-1 text-white/70">
+                                        Total: ₹{money(successInvoice.finalTotal)}
+                                    </div>
+                                    <div className="mt-1 text-white/70">
+                                        Status: {successInvoice.paymentStatus}
+                                    </div>
                                 </div>
                             ) : null}
                         </div>
                     </div>
                 </div>
             </div>
+
+            {printInvoice ? (
+                <div id="thermal-bill" style={{ position: "absolute", left: "-9999px", top: 0 }}>
+                    <div style={{ textAlign: "center", marginBottom: 8 }}>
+                        <div style={{ fontSize: 18, fontWeight: "bold" }}>SVS TRADERS</div>
+                        <div style={{ fontSize: 12 }}>2Dudes Bevdass</div>
+                        <div style={{ fontSize: 11, marginTop: 2 }}>Thank You For Shopping</div>
+                    </div>
+
+                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+
+                    <div style={{ fontSize: 11, lineHeight: 1.5 }}>
+                        <div><strong>Invoice:</strong> {printInvoice.invoiceCode}</div>
+                        <div><strong>Date:</strong> {printInvoice.invoiceDate}</div>
+                        <div><strong>Customer:</strong> {printInvoice.customerName || "Walk-in"}</div>
+                    </div>
+
+                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+
+                    <div style={{ fontSize: 11 }}>
+                        {printInvoice.items.map((item, index) => {
+                            const lineGross = getLineGross(item);
+                            const lineDiscount = getLineDiscountAmount(item);
+                            const lineNet = getLineNet(item);
+
+                            const discountText =
+                                Number(item.discountValue || 0) > 0
+                                    ? item.discountType === "percent"
+                                        ? `${Number(item.discountValue)}% Off`
+                                        : `₹${money(item.discountValue)} Off`
+                                    : "No Discount";
+
+                            return (
+                                <div key={`${item.id}-${index}`} style={{ marginBottom: 8 }}>
+                                    <div style={{ fontWeight: "bold" }}>
+                                        {index + 1}x {item.product_name}
+                                    </div>
+                                    <div>Qty: {item.quantity}</div>
+                                    <div>MRP: ₹{money(item.mrp)}</div>
+                                    <div>Gross: ₹{money(lineGross)}</div>
+                                    <div>Discount: {discountText}</div>
+                                    <div>Line Discount: ₹{money(lineDiscount)}</div>
+                                    <div>Final: ₹{money(lineNet)}</div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+
+                    <div style={{ fontSize: 11, lineHeight: 1.5 }}>
+                        <div><strong>Items Total:</strong> ₹{money(printInvoice.itemsGrossTotal)}</div>
+                        <div><strong>Total Discount:</strong> ₹{money(printInvoice.itemDiscountTotal + printInvoice.billDiscountAmount)}</div>
+                        <div><strong>Final Amount Paid:</strong> ₹{money(printInvoice.finalTotal)}</div>
+                        <div><strong>Payment Mode:</strong> {printInvoice.paymentMode}</div>
+                        <div><strong>Status:</strong> {printInvoice.paymentStatus}</div>
+                    </div>
+
+                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
+
+                    <div style={{ textAlign: "center", fontSize: 11 }}>
+                        Thank You 😊<br />
+                        Visit Again
+                    </div>
+                </div>
+            ) : null}
         </div>
     );
 }

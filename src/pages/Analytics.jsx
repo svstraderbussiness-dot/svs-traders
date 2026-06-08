@@ -92,6 +92,14 @@ function isAcceptedReturn(row) {
     return String(row?.status || "").toLowerCase() === "accepted";
 }
 
+function isReplacementReturn(row) {
+    return String(row?.status || "").toLowerCase() === "replacement";
+}
+
+function isRejectedReturn(row) {
+    return String(row?.status || "").toLowerCase() === "rejected";
+}
+
 function toDayKey(value) {
     const d = parseDate(value);
     if (!d) return null;
@@ -108,6 +116,68 @@ function formatDayLabel(key) {
     });
 }
 
+function getProductLabel(item, productById) {
+    const product = productById.get(item.product_id);
+    return (
+        item.product_name ||
+        product?.product_name ||
+        product?.product_code ||
+        product?.style_code ||
+        "Product"
+    );
+}
+
+function getBrandLabel(item, productById) {
+    const product = productById.get(item.product_id);
+    return item.brand || product?.brand || "Unknown";
+}
+
+function getBarcodeLabel(item, productById) {
+    const product = productById.get(item.product_id);
+    return item.barcode || product?.barcode || "-";
+}
+
+function StatCard({ title, value, hint, tone = "blue" }) {
+    const toneClasses = {
+        blue: "bg-white/5 border-white/10",
+        green: "bg-emerald-500/10 border-emerald-500/20",
+        red: "bg-red-500/10 border-red-500/20",
+        amber: "bg-amber-500/10 border-amber-500/20",
+    };
+
+    return (
+        <div className={`rounded-3xl border p-5 shadow-xl ${toneClasses[tone]}`}>
+            <div>
+                <div className="text-sm text-white/60">{title}</div>
+                <div className="mt-2 text-3xl font-bold tracking-tight">{value}</div>
+                {hint ? <div className="mt-2 text-sm text-white/45">{hint}</div> : null}
+            </div>
+        </div>
+    );
+}
+
+function SectionCard({ title, subtitle, right, children }) {
+    return (
+        <section className="rounded-3xl border border-white/10 bg-[#1d1d2e] p-5 shadow-xl lg:p-6">
+            <div className="mb-5 flex items-start justify-between gap-4">
+                <div>
+                    <h2 className="text-2xl font-bold">{title}</h2>
+                    {subtitle ? <p className="mt-1 text-sm text-white/55">{subtitle}</p> : null}
+                </div>
+                {right ? <div>{right}</div> : null}
+            </div>
+            {children}
+        </section>
+    );
+}
+
+function getRangeLabel(range) {
+    if (range === "7d") return "Last 7 Days";
+    if (range === "30d") return "Last 30 Days";
+    if (range === "90d") return "Last 90 Days";
+    return "All Data";
+}
+
 export default function Analytics() {
     const [products, setProducts] = useState([]);
     const [invoices, setInvoices] = useState([]);
@@ -118,23 +188,36 @@ export default function Analytics() {
     const [error, setError] = useState("");
     const [lastUpdated, setLastUpdated] = useState(null);
 
-    const currency = useCallback((value) => {
-        return Number(value || 0).toLocaleString("en-IN", {
-            minimumFractionDigits: 2,
-            maximumFractionDigits: 2,
-        });
-    }, []);
-
     const loadAnalytics = useCallback(async () => {
         setLoading(true);
         setError("");
 
         try {
             const [productsRes, invoicesRes, itemsRes, returnsRes] = await Promise.all([
-                supabase.from("products").select("*").order("created_at", { ascending: false }),
-                supabase.from("invoices").select("*").order("created_at", { ascending: false }),
-                supabase.from("invoice_items").select("*"),
-                supabase.from("returns").select("*").order("created_at", { ascending: false }),
+                supabase
+                    .from("products")
+                    .select("id, barcode, date, style_code, size, product_code, quantity, mrp, brand")
+                    .order("id", { ascending: false }),
+
+                supabase
+                    .from("invoices")
+                    .select(
+                        "id, invoice_code, customer_id, subtotal, discount_amount, final_amount, payment_mode, payment_status, total_items, created_at"
+                    )
+                    .order("created_at", { ascending: false }),
+
+                supabase
+                    .from("invoice_items")
+                    .select(
+                        "id, invoice_id, product_id, quantity, price, subtotal, barcode, product_name, brand"
+                    ),
+
+                supabase
+                    .from("returns")
+                    .select(
+                        "id, invoice_code, status, quantity, refund_amount, created_at, barcode, product_name, reason, rejection_reason, customer_name, phone_number, invoice_date, processed_by, add_to_inventory, replacement_type, replacement_barcode, replacement_product_name, replacement_quantity, replacement_product_id, replacement_done"
+                    )
+                    .order("created_at", { ascending: false }),
             ]);
 
             if (productsRes.error) throw productsRes.error;
@@ -142,7 +225,12 @@ export default function Analytics() {
             if (itemsRes.error) throw itemsRes.error;
             if (returnsRes.error) throw returnsRes.error;
 
-            setProducts(productsRes.data || []);
+            const safeProducts = (productsRes.data || []).map((p) => ({
+                ...p,
+                product_name: p.product_code || p.style_code || "Product",
+            }));
+
+            setProducts(safeProducts);
             setInvoices(invoicesRes.data || []);
             setInvoiceItems(itemsRes.data || []);
             setReturnsData(returnsRes.data || []);
@@ -170,9 +258,7 @@ export default function Analytics() {
     const productByBarcode = useMemo(() => {
         const map = new Map();
         products.forEach((p) => {
-            if (p.barcode) {
-                map.set(String(p.barcode), p);
-            }
+            if (p.barcode) map.set(String(p.barcode), p);
         });
         return map;
     }, [products]);
@@ -180,9 +266,7 @@ export default function Analytics() {
     const invoiceByCode = useMemo(() => {
         const map = new Map();
         invoices.forEach((inv) => {
-            if (inv.invoice_code) {
-                map.set(String(inv.invoice_code), inv);
-            }
+            if (inv.invoice_code) map.set(String(inv.invoice_code), inv);
         });
         return map;
     }, [invoices]);
@@ -218,7 +302,9 @@ export default function Analytics() {
                         ? 90
                         : Infinity;
 
-        return returnsData.filter((item) => isWithinDays(item.created_at, days) && isAcceptedReturn(item));
+        return returnsData.filter(
+            (item) => isWithinDays(item.created_at, days) && isAcceptedReturn(item)
+        );
     }, [chartRange, returnsData]);
 
     const totals = useMemo(() => {
@@ -249,43 +335,25 @@ export default function Analytics() {
         const monthGross = monthInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
         const yearGross = yearInvoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
 
-        const todayRefund = todayAcceptedReturns.reduce(
-            (sum, r) => sum + Number(r.refund_amount || 0),
-            0
-        );
-        const weekRefund = weekAcceptedReturns.reduce(
-            (sum, r) => sum + Number(r.refund_amount || 0),
-            0
-        );
-        const monthRefund = monthAcceptedReturns.reduce(
-            (sum, r) => sum + Number(r.refund_amount || 0),
-            0
-        );
-        const yearRefund = yearAcceptedReturns.reduce(
-            (sum, r) => sum + Number(r.refund_amount || 0),
-            0
-        );
+        const todayRefund = todayAcceptedReturns.reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
+        const weekRefund = weekAcceptedReturns.reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
+        const monthRefund = monthAcceptedReturns.reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
+        const yearRefund = yearAcceptedReturns.reduce((sum, r) => sum + Number(r.refund_amount || 0), 0);
 
         const todayRevenue = Math.max(todayGross - todayRefund, 0);
         const weekRevenue = Math.max(weekGross - weekRefund, 0);
         const monthRevenue = Math.max(monthGross - monthRefund, 0);
         const yearRevenue = Math.max(yearGross - yearRefund, 0);
 
-        const totalDiscount = invoices.reduce(
-            (sum, inv) => sum + Number(inv.discount_amount || 0),
-            0
-        );
-        const grossIncome = invoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
-            0
-        );
-        const totalReturnRefund = returnsData
-            .filter(isAcceptedReturn)
-            .reduce((sum, item) => sum + Number(item.refund_amount || 0), 0);
-        const totalReturnQty = returnsData
-            .filter(isAcceptedReturn)
-            .reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-        const totalReturns = returnsData.filter(isAcceptedReturn).length;
+        const totalDiscount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
+        const grossIncome = invoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const totalReturnRefund = returnsData.filter(isAcceptedReturn).reduce((sum, item) => sum + Number(item.refund_amount || 0), 0);
+        const totalAcceptedReturnQty = returnsData.filter(isAcceptedReturn).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        const totalReplacementQty = returnsData.filter(isReplacementReturn).reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        const totalReplacementProductQty = returnsData.filter(isReplacementReturn).reduce((sum, item) => sum + Number(item.replacement_quantity || 0), 0);
+        const totalAcceptedReturns = returnsData.filter(isAcceptedReturn).length;
+        const totalReplacementReturns = returnsData.filter(isReplacementReturn).length;
+        const totalRejectedReturns = returnsData.filter(isRejectedReturn).length;
 
         const paymentCount = invoices.reduce((acc, inv) => {
             const key = inv.payment_mode || "Unknown";
@@ -315,14 +383,14 @@ export default function Analytics() {
             return acc;
         }, {});
 
-        const inventoryValue = products.reduce(
-            (sum, p) => sum + Number(p.quantity || 0) * Number(p.selling_price || p.mrp || 0),
-            0
-        );
+        const inventoryValue = products.reduce((sum, p) => {
+            const qty = Number(p.quantity || 0);
+            const price = Number(p.mrp || 0);
+            return sum + qty * price;
+        }, 0);
 
         const totalIncome = Math.max(grossIncome - totalReturnRefund, 0);
         const billAverage = totalBills > 0 ? totalIncome / totalBills : 0;
-        const netRevenue = totalIncome;
 
         return {
             todayRevenue,
@@ -335,15 +403,17 @@ export default function Analytics() {
             totalDiscount,
             billAverage,
             totalReturnRefund,
-            totalReturnQty,
-            totalReturns,
+            totalAcceptedReturnQty,
+            totalReplacementQty,
+            totalReplacementProductQty,
+            totalAcceptedReturns,
+            totalReplacementReturns,
+            totalRejectedReturns,
             inventoryValue,
             paymentCount,
             paymentRevenue,
-            netRevenue,
         };
     }, [invoices, invoiceByCode, products, returnsData]);
-
     const revenueTrend = useMemo(() => {
         const map = new Map();
 
@@ -387,13 +457,17 @@ export default function Analytics() {
         const barcodeToPrice = new Map();
 
         selectedItems.forEach((item) => {
-            const brand = item.brand || productById.get(item.product_id)?.brand || "Unknown";
-            const barcode = String(item.barcode || productById.get(item.product_id)?.barcode || "-");
+            const product = productById.get(item.product_id);
+            const brand = item.brand || product?.brand || "Unknown";
+            const barcode = String(item.barcode || product?.barcode || "-");
             const qty = Number(item.quantity || 0);
             const amount = Number(item.subtotal || 0) || qty * Number(item.price || 0);
 
             barcodeToBrand.set(barcode, brand);
-            barcodeToPrice.set(barcode, Number(item.price || 0) || Number(item.subtotal || 0) / (qty || 1));
+            barcodeToPrice.set(
+                barcode,
+                Number(item.price || 0) || Number(item.subtotal || 0) / (qty || 1)
+            );
 
             const existing = brandMap.get(brand) || {
                 brand,
@@ -408,8 +482,11 @@ export default function Analytics() {
 
         selectedReturns.forEach((r) => {
             const barcode = String(r.barcode || "-");
-            const brand = barcodeToBrand.get(barcode) || productByBarcode.get(barcode)?.brand || "Unknown";
-            const price = barcodeToPrice.get(barcode) || Number(r.refund_amount || 0) / (Number(r.quantity || 1) || 1);
+            const brand =
+                barcodeToBrand.get(barcode) || productByBarcode.get(barcode)?.brand || "Unknown";
+            const price =
+                barcodeToPrice.get(barcode) ||
+                Number(r.refund_amount || 0) / (Number(r.quantity || 1) || 1);
             const qty = Number(r.quantity || 0);
             const amount = Number(r.refund_amount || qty * price || 0);
 
@@ -431,19 +508,13 @@ export default function Analytics() {
         const map = new Map();
 
         selectedItems.forEach((item) => {
-            const productId =
-                item.product_id || item.barcode || `${item.product_name}-${item.brand}`;
-            const productName =
-                item.product_name ||
-                productById.get(item.product_id)?.product_name ||
-                "Product";
-            const brand =
-                item.brand || productById.get(item.product_id)?.brand || "Unknown";
-            const barcode =
-                item.barcode || productById.get(item.product_id)?.barcode || "-";
+            const productId = item.product_id || item.barcode || `${item.product_name}-${item.brand}`;
+            const product = productById.get(item.product_id);
+            const productName = getProductLabel(item, productById);
+            const brand = getBrandLabel(item, productById);
+            const barcode = getBarcodeLabel(item, productById);
             const qty = Number(item.quantity || 0);
-            const amount =
-                Number(item.subtotal || 0) || qty * Number(item.price || 0);
+            const amount = Number(item.subtotal || 0) || qty * Number(item.price || 0);
 
             const existing = map.get(productId) || {
                 productId,
@@ -492,34 +563,46 @@ export default function Analytics() {
     const returnAnalytics = useMemo(() => {
         const accepted = returnsData.filter((r) => r.status === "Accepted").length;
         const rejected = returnsData.filter((r) => r.status === "Rejected").length;
+        const replacement = returnsData.filter((r) => r.status === "Replacement").length;
         const totalRefund = returnsData
             .filter(isAcceptedReturn)
             .reduce((sum, item) => sum + Number(item.refund_amount || 0), 0);
 
-        const topReturned = [...selectedReturns]
+        const topAcceptedReturned = selectedReturns
+            .map((row) => ({
+                ...row,
+                displayProduct: row.product_name || row.barcode || "Unknown Product",
+            }))
+            .filter((row) => row.displayProduct !== "Unknown Product" || row.barcode || row.product_name)
             .sort((a, b) => Number(b.quantity || 0) - Number(a.quantity || 0))
+            .slice(0, 8);
+
+        const topReplacementReturned = returnsData
+            .filter(isReplacementReturn)
+            .map((row) => ({
+                ...row,
+                displayProduct: row.product_name || row.barcode || "Unknown Product",
+                replacementDisplay:
+                    row.replacement_product_name || row.replacement_barcode || "Unknown Replacement",
+            }))
+            .sort((a, b) => Number(b.replacement_quantity || 0) - Number(a.replacement_quantity || 0))
             .slice(0, 8);
 
         return {
             accepted,
             rejected,
+            replacement,
             totalRefund,
-            topReturned,
+            topAcceptedReturned,
+            topReplacementReturned,
         };
     }, [returnsData, selectedReturns]);
+    const chartDataKeyLabel = useMemo(() => getRangeLabel(chartRange), [chartRange]);
 
     const downloadAnalyticsPDF = () => {
         try {
             const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
             const now = new Date();
-            const titleRange =
-                chartRange === "7d"
-                    ? "Last 7 Days"
-                    : chartRange === "30d"
-                        ? "Last 30 Days"
-                        : chartRange === "90d"
-                            ? "Last 90 Days"
-                            : "All Data";
 
             doc.setFont("helvetica", "bold");
             doc.setFontSize(18);
@@ -528,19 +611,24 @@ export default function Analytics() {
             doc.setFont("helvetica", "normal");
             doc.setFontSize(10);
             doc.text(`Generated: ${now.toLocaleString()}`, 14, 23);
-            doc.text(`Chart Range: ${titleRange}`, 14, 29);
+            doc.text(`Chart Range: ${chartDataKeyLabel}`, 14, 29);
             doc.text(`Total Bills: ${totals.totalBills}`, 14, 35);
-            doc.text(`Total Income: ₹${currency(totals.totalIncome)}`, 14, 41);
-            doc.text(`Net Revenue: ₹${currency(totals.netRevenue)}`, 14, 47);
-            doc.text(`Inventory Value: ₹${currency(totals.inventoryValue)}`, 14, 53);
-            doc.text(`Returns: ${totals.totalReturns}`, 14, 59);
+            doc.text(`Total Income: ₹${money(totals.totalIncome)}`, 14, 41);
+            doc.text(`Inventory Value: ₹${money(totals.inventoryValue)}`, 14, 47);
+            doc.text(`Accepted Returns: ${totals.totalAcceptedReturns}`, 14, 53);
+            doc.text(`Replacement Returns: ${totals.totalReplacementReturns}`, 14, 59);
+            doc.text(`Return Refund: ₹${money(totals.totalReturnRefund)}`, 14, 65);
 
             autoTable(doc, {
-                startY: 66,
+                startY: 72,
                 head: [["Date", "Bills", "Revenue"]],
                 body:
                     revenueTrend.length > 0
-                        ? revenueTrend.map((row) => [row.label, row.bills, `₹${currency(row.revenue)}`])
+                        ? revenueTrend.map((row) => [
+                            row.label,
+                            row.bills,
+                            `₹${money(row.revenue)}`,
+                        ])
                         : [["-", 0, "₹0.00"]],
                 styles: { fontSize: 8, cellPadding: 2 },
                 headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
@@ -553,7 +641,11 @@ export default function Analytics() {
                 head: [["Brand", "Qty Sold", "Revenue"]],
                 body:
                     brandAnalytics.length > 0
-                        ? brandAnalytics.map((row) => [row.brand, row.qty, `₹${currency(row.revenue)}`])
+                        ? brandAnalytics.map((row) => [
+                            row.brand,
+                            row.qty,
+                            `₹${money(row.revenue)}`,
+                        ])
                         : [["-", 0, "₹0.00"]],
                 styles: { fontSize: 8, cellPadding: 2 },
                 headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
@@ -566,7 +658,11 @@ export default function Analytics() {
                 head: [["Mode", "Bills", "Revenue"]],
                 body:
                     paymentAnalytics.length > 0
-                        ? paymentAnalytics.map((row) => [row.mode, row.count, `₹${currency(row.revenue)}`])
+                        ? paymentAnalytics.map((row) => [
+                            row.mode,
+                            row.count,
+                            `₹${money(row.revenue)}`,
+                        ])
                         : [["-", 0, "₹0.00"]],
                 styles: { fontSize: 8, cellPadding: 2 },
                 headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
@@ -574,24 +670,42 @@ export default function Analytics() {
                 margin: { left: 14, right: 14 },
             });
 
-            autoTable(doc, {
-                startY: doc.lastAutoTable.finalY + 8,
-                head: [["Barcode", "Product", "Qty", "Refund", "Status"]],
-                body:
-                    returnAnalytics.topReturned.length > 0
-                        ? returnAnalytics.topReturned.map((row) => [
-                            row.barcode || "-",
-                            row.product_name || "-",
-                            row.quantity || 0,
-                            `₹${currency(row.refund_amount)}`,
-                            row.status || "-",
-                        ])
-                        : [["-", "-", 0, "₹0.00", "-"]],
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
-            });
+            if (returnAnalytics.topAcceptedReturned.length > 0) {
+                autoTable(doc, {
+                    startY: doc.lastAutoTable.finalY + 8,
+                    head: [["Invoice", "Barcode", "Product", "Qty", "Refund", "Status"]],
+                    body: returnAnalytics.topAcceptedReturned.map((row) => [
+                        row.invoice_code || "-",
+                        row.barcode || "N/A",
+                        row.displayProduct || "Unknown Product",
+                        row.quantity || 0,
+                        `₹${money(row.refund_amount || 0)}`,
+                        row.status || "-",
+                    ]),
+                    styles: { fontSize: 8, cellPadding: 2 },
+                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
+                    alternateRowStyles: { fillColor: [245, 247, 255] },
+                    margin: { left: 14, right: 14 },
+                });
+            }
+
+            if (returnAnalytics.topReplacementReturned.length > 0) {
+                autoTable(doc, {
+                    startY: doc.lastAutoTable.finalY + 8,
+                    head: [["Invoice", "Returned Item", "Replacement Item", "Returned Qty", "Replacement Qty"]],
+                    body: returnAnalytics.topReplacementReturned.map((row) => [
+                        row.invoice_code || "-",
+                        row.displayProduct || "-",
+                        row.replacementDisplay || "-",
+                        row.quantity || 0,
+                        row.replacement_quantity || 0,
+                    ]),
+                    styles: { fontSize: 8, cellPadding: 2 },
+                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
+                    alternateRowStyles: { fillColor: [245, 247, 255] },
+                    margin: { left: 14, right: 14 },
+                });
+            }
 
             doc.save(`SVS_Analytics_${new Date().toISOString().slice(0, 10)}.pdf`);
         } catch (err) {
@@ -599,7 +713,6 @@ export default function Analytics() {
             alert("Could not generate analytics PDF.");
         }
     };
-
     const cardClass =
         "rounded-3xl bg-[#1d1d2e] border border-white/10 shadow-xl p-5 lg:p-6";
     const chartCardClass =
@@ -639,69 +752,111 @@ export default function Analytics() {
                 {error ? <div className={`${cardClass} mb-6 text-red-300`}>{error}</div> : null}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Today Revenue</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.todayRevenue)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">This Week Revenue</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.weekRevenue)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">This Month Revenue</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.monthRevenue)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">This Year Revenue</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.yearRevenue)}</div>
-                    </div>
+                    <StatCard
+                        title="Today Revenue"
+                        value={`₹${money(totals.todayRevenue)}`}
+                        hint="Net after accepted returns"
+                        tone="blue"
+                    />
+                    <StatCard
+                        title="This Week Revenue"
+                        value={`₹${money(totals.weekRevenue)}`}
+                        hint="Last 7 days"
+                        tone="green"
+                    />
+                    <StatCard
+                        title="This Month Revenue"
+                        value={`₹${money(totals.monthRevenue)}`}
+                        hint="Current month"
+                        tone="amber"
+                    />
+                    <StatCard
+                        title="This Year Revenue"
+                        value={`₹${money(totals.yearRevenue)}`}
+                        hint="Current year"
+                        tone="red"
+                    />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Total Bills</div>
-                        <div className="text-3xl font-bold mt-2">{totals.totalBills}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Net Revenue</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.netRevenue)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Inventory Value</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.inventoryValue)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Average Bill</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.billAverage)}</div>
-                    </div>
+                    <StatCard
+                        title="Total Bills"
+                        value={totals.totalBills}
+                        hint="All invoices"
+                        tone="blue"
+                    />
+                    <StatCard
+                        title="Net Revenue"
+                        value={`₹${money(totals.totalIncome)}`}
+                        hint="Gross minus accepted returns"
+                        tone="green"
+                    />
+                    <StatCard
+                        title="Inventory Value"
+                        value={`₹${money(totals.inventoryValue)}`}
+                        hint="Quantity × MRP"
+                        tone="amber"
+                    />
+                    <StatCard
+                        title="Average Bill"
+                        value={`₹${money(totals.billAverage)}`}
+                        hint="Net revenue / bills"
+                        tone="red"
+                    />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Total Discount</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.totalDiscount)}</div>
-                    </div>
+                    <StatCard
+                        title="Total Discount"
+                        value={`₹${money(totals.totalDiscount)}`}
+                        hint="Invoice discounts"
+                        tone="blue"
+                    />
+                    <StatCard
+                        title="Accepted Returns"
+                        value={totals.totalAcceptedReturns}
+                        hint="Refunded returns"
+                        tone="green"
+                    />
+                    <StatCard
+                        title="Replacement Returns"
+                        value={totals.totalReplacementReturns}
+                        hint="Replacement cases"
+                        tone="amber"
+                    />
+                    <StatCard
+                        title="Return Refund"
+                        value={`₹${money(totals.totalReturnRefund)}`}
+                        hint="Refund paid"
+                        tone="red"
+                    />
+                </div>
 
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Returns Count</div>
-                        <div className="text-3xl font-bold mt-2">{totals.totalReturns}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Return Refund</div>
-                        <div className="text-3xl font-bold mt-2">₹{currency(totals.totalReturnRefund)}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Return Qty</div>
-                        <div className="text-3xl font-bold mt-2">{totals.totalReturnQty}</div>
-                    </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
+                    <StatCard
+                        title="Accepted Return Qty"
+                        value={totals.totalAcceptedReturnQty}
+                        hint="Items returned"
+                        tone="blue"
+                    />
+                    <StatCard
+                        title="Replacement Qty"
+                        value={totals.totalReplacementQty}
+                        hint="Items replaced"
+                        tone="green"
+                    />
+                    <StatCard
+                        title="Replacement Product Qty"
+                        value={totals.totalReplacementProductQty}
+                        hint="Replacement units"
+                        tone="amber"
+                    />
+                    <StatCard
+                        title="Average Bill"
+                        value={`₹${money(totals.billAverage)}`}
+                        hint="Net revenue / bills"
+                        tone="red"
+                    />
                 </div>
 
                 <div className="mb-6 flex flex-wrap gap-3">
@@ -739,15 +894,7 @@ export default function Analytics() {
                     <div className={chartCardClass}>
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-2xl font-bold">Revenue Trend</h2>
-                            <span className="text-white/50 text-sm">
-                                {chartRange === "7d"
-                                    ? "Last 7 days"
-                                    : chartRange === "30d"
-                                        ? "Last 30 days"
-                                        : chartRange === "90d"
-                                            ? "Last 90 days"
-                                            : "All data"}
-                            </span>
+                            <span className="text-white/50 text-sm">{chartDataKeyLabel}</span>
                         </div>
 
                         {revenueTrend.length === 0 ? (
@@ -767,7 +914,7 @@ export default function Analytics() {
                                                 border: "1px solid rgba(255,255,255,0.1)",
                                                 borderRadius: 12,
                                             }}
-                                            formatter={(value) => `₹${currency(value)}`}
+                                            formatter={(value) => `₹${money(value)}`}
                                         />
                                         <Legend />
                                         <Line
@@ -821,7 +968,7 @@ export default function Analytics() {
                                                 border: "1px solid rgba(255,255,255,0.1)",
                                                 borderRadius: 12,
                                             }}
-                                            formatter={(value) => `₹${currency(value)}`}
+                                            formatter={(value) => `₹${money(value)}`}
                                         />
                                         <Legend />
                                     </PieChart>
@@ -868,7 +1015,7 @@ export default function Analytics() {
                                                 border: "1px solid rgba(255,255,255,0.1)",
                                                 borderRadius: 12,
                                             }}
-                                            formatter={(value) => `₹${currency(value)}`}
+                                            formatter={(value) => `₹${money(value)}`}
                                         />
                                         <Legend />
                                     </PieChart>
@@ -901,7 +1048,7 @@ export default function Analytics() {
                                                 borderRadius: 12,
                                             }}
                                             formatter={(value, name) =>
-                                                name === "revenue" ? `₹${currency(value)}` : value
+                                                name === "revenue" ? `₹${money(value)}` : value
                                             }
                                         />
                                         <Legend />
@@ -940,7 +1087,7 @@ export default function Analytics() {
                                             <tr key={row.brand} className="border-b border-white/5">
                                                 <td className="py-3 pr-4">{row.brand}</td>
                                                 <td className="py-3 pr-4">{row.qty}</td>
-                                                <td className="py-3 pr-4">₹{currency(row.revenue)}</td>
+                                                <td className="py-3 pr-4">₹{money(row.revenue)}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -974,7 +1121,7 @@ export default function Analytics() {
                                             <tr key={row.mode} className="border-b border-white/5">
                                                 <td className="py-3 pr-4">{row.mode}</td>
                                                 <td className="py-3 pr-4">{row.count}</td>
-                                                <td className="py-3 pr-4">₹{currency(row.revenue)}</td>
+                                                <td className="py-3 pr-4">₹{money(row.revenue)}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -987,7 +1134,9 @@ export default function Analytics() {
                 <div className={chartCardClass}>
                     <div className="flex items-center justify-between mb-4">
                         <h2 className="text-2xl font-bold">Returns Summary</h2>
-                        <span className="text-white/50 text-sm">{returnAnalytics.topReturned.length} records</span>
+                        <span className="text-white/50 text-sm">
+                            {returnAnalytics.topAcceptedReturned.length + returnAnalytics.topReplacementReturned.length} records
+                        </span>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
@@ -996,47 +1145,95 @@ export default function Analytics() {
                             <div className="text-2xl font-bold mt-1">{returnAnalytics.accepted}</div>
                         </div>
                         <div className="rounded-2xl bg-white/5 border border-white/5 p-4">
+                            <div className="text-white/50 text-sm">Replacement</div>
+                            <div className="text-2xl font-bold mt-1">{returnAnalytics.replacement}</div>
+                        </div>
+                        <div className="rounded-2xl bg-white/5 border border-white/5 p-4">
                             <div className="text-white/50 text-sm">Rejected</div>
                             <div className="text-2xl font-bold mt-1">{returnAnalytics.rejected}</div>
                         </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
                         <div className="rounded-2xl bg-white/5 border border-white/5 p-4">
-                            <div className="text-white/50 text-sm">Refund</div>
-                            <div className="text-2xl font-bold mt-1">₹{currency(returnAnalytics.totalRefund)}</div>
+                            <div className="text-white/50 text-sm">Accepted Refund</div>
+                            <div className="text-2xl font-bold mt-1">
+                                ₹{money(returnAnalytics.totalRefund)}
+                            </div>
+                        </div>
+                        <div className="rounded-2xl bg-white/5 border border-white/5 p-4">
+                            <div className="text-white/50 text-sm">Accepted Return Qty</div>
+                            <div className="text-2xl font-bold mt-1">{totals.totalAcceptedReturnQty}</div>
                         </div>
                     </div>
 
-                    {returnAnalytics.topReturned.length === 0 ? (
+                    {returnAnalytics.topAcceptedReturned.length === 0 &&
+                        returnAnalytics.topReplacementReturned.length === 0 ? (
                         <div className="rounded-2xl bg-white/5 border border-white/5 p-4 text-white/50">
                             No return records for this range.
                         </div>
                     ) : (
-                        <div className="overflow-x-auto">
-                            <table className="w-full text-sm">
-                                <thead>
-                                    <tr className="text-left border-b border-white/10 text-white/70">
-                                        <th className="py-3 pr-4">Invoice</th>
-                                        <th className="py-3 pr-4">Product</th>
-                                        <th className="py-3 pr-4">Qty</th>
-                                        <th className="py-3 pr-4">Refund</th>
-                                        <th className="py-3 pr-4">Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {returnAnalytics.topReturned.map((r) => (
-                                        <tr key={r.id} className="border-b border-white/5">
-                                            <td className="py-3 pr-4">{r.invoice_code || "-"}</td>
-                                            <td className="py-3 pr-4">{r.product_name || "-"}</td>
-                                            <td className="py-3 pr-4">{r.quantity || 0}</td>
-                                            <td className="py-3 pr-4">₹{currency(r.refund_amount)}</td>
-                                            <td className="py-3 pr-4">{r.status || "-"}</td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
+                        <div className="space-y-5">
+                            {returnAnalytics.topAcceptedReturned.length > 0 ? (
+                                <div className="overflow-x-auto">
+                                    <h3 className="mb-3 font-semibold text-white/80">Accepted Returns</h3>
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="text-left border-b border-white/10 text-white/70">
+                                                <th className="py-3 pr-4">Invoice</th>
+                                                <th className="py-3 pr-4">Barcode</th>
+                                                <th className="py-3 pr-4">Product</th>
+                                                <th className="py-3 pr-4">Qty</th>
+                                                <th className="py-3 pr-4">Refund</th>
+                                                <th className="py-3 pr-4">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {returnAnalytics.topAcceptedReturned.map((r) => (
+                                                <tr key={r.id} className="border-b border-white/5">
+                                                    <td className="py-3 pr-4">{r.invoice_code || "-"}</td>
+                                                    <td className="py-3 pr-4">{r.barcode || "N/A"}</td>
+                                                    <td className="py-3 pr-4">{r.displayProduct || "-"}</td>
+                                                    <td className="py-3 pr-4">{r.quantity || 0}</td>
+                                                    <td className="py-3 pr-4">₹{money(r.refund_amount || 0)}</td>
+                                                    <td className="py-3 pr-4">{r.status || "-"}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : null}
+
+                            {returnAnalytics.topReplacementReturned.length > 0 ? (
+                                <div className="overflow-x-auto">
+                                    <h3 className="mb-3 font-semibold text-white/80">Replacement Returns</h3>
+                                    <table className="w-full text-sm">
+                                        <thead>
+                                            <tr className="text-left border-b border-white/10 text-white/70">
+                                                <th className="py-3 pr-4">Invoice</th>
+                                                <th className="py-3 pr-4">Returned Item</th>
+                                                <th className="py-3 pr-4">Replacement Item</th>
+                                                <th className="py-3 pr-4">Returned Qty</th>
+                                                <th className="py-3 pr-4">Replacement Qty</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {returnAnalytics.topReplacementReturned.map((r) => (
+                                                <tr key={r.id} className="border-b border-white/5">
+                                                    <td className="py-3 pr-4">{r.invoice_code || "-"}</td>
+                                                    <td className="py-3 pr-4">{r.displayProduct || "-"}</td>
+                                                    <td className="py-3 pr-4">{r.replacementDisplay || "-"}</td>
+                                                    <td className="py-3 pr-4">{r.quantity || 0}</td>
+                                                    <td className="py-3 pr-4">{r.replacement_quantity || 0}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : null}
                         </div>
                     )}
                 </div>
-
                 <div className="text-white/40 text-sm pb-2 mt-6">
                     Data is calculated from invoices, invoice items, products, and returns in Supabase.
                 </div>

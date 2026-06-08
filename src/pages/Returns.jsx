@@ -4,7 +4,7 @@ import { useTheme } from "../context/ThemeContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
-const RETURN_WINDOW_DAYS = 3;
+const RETURN_WINDOW_DAYS = 7;
 
 function money(value) {
     return Number(value || 0).toLocaleString("en-IN", {
@@ -101,6 +101,11 @@ function buildWhatsappLink(phone, text) {
     return `https://wa.me/${normalized}?text=${encodeURIComponent(text)}`;
 }
 
+function buildProductLabel(product) {
+    if (!product) return "Product";
+    return product.product_code || product.style_code || "Product";
+}
+
 export default function Returns() {
     const { settings } = useTheme();
 
@@ -118,9 +123,32 @@ export default function Returns() {
         Boolean(settings.auto_restore_return_stock ?? true)
     );
 
+    const [replacementSearchQuery, setReplacementSearchQuery] = useState("");
+    const [replacementSearchResults, setReplacementSearchResults] = useState([]);
+    const [replacementSearching, setReplacementSearching] = useState(false);
+    const [selectedReplacementProduct, setSelectedReplacementProduct] = useState(null);
+    const [replacementQuantity, setReplacementQuantity] = useState(1);
+
     const [processing, setProcessing] = useState(false);
     const [historyLoading, setHistoryLoading] = useState(false);
     const [returnHistory, setReturnHistory] = useState([]);
+
+    useEffect(() => {
+        if (statusType === "Replacement") {
+            setAddToInventory(true);
+        } else {
+            setAddToInventory(Boolean(settings.auto_restore_return_stock ?? true));
+        }
+    }, [statusType, settings.auto_restore_return_stock]);
+
+    useEffect(() => {
+        if (statusType !== "Replacement") {
+            setReplacementSearchQuery("");
+            setReplacementSearchResults([]);
+            setSelectedReplacementProduct(null);
+            setReplacementQuantity(1);
+        }
+    }, [statusType]);
 
     useEffect(() => {
         setAddToInventory(Boolean(settings.auto_restore_return_stock ?? true));
@@ -138,6 +166,11 @@ export default function Returns() {
     const selectedQtyTotal = useMemo(() => {
         return invoiceItems.reduce((sum, item) => sum + Number(item.return_qty || 0), 0);
     }, [invoiceItems]);
+
+    const replacementTotal = useMemo(() => {
+        if (statusType !== "Replacement" || !selectedReplacementProduct) return 0;
+        return Number(replacementQuantity || 0) * Number(selectedReplacementProduct.mrp || 0);
+    }, [statusType, selectedReplacementProduct, replacementQuantity]);
 
     const returnAllowed = useMemo(() => {
         if (!invoiceMeta?.invoice?.created_at) return false;
@@ -162,6 +195,10 @@ export default function Returns() {
         setReasonType("Damaged");
         setCustomReason("");
         setAddToInventory(Boolean(settings.auto_restore_return_stock ?? true));
+        setReplacementSearchQuery("");
+        setReplacementSearchResults([]);
+        setSelectedReplacementProduct(null);
+        setReplacementQuantity(1);
         setInvoiceMessage("");
     };
 
@@ -171,7 +208,7 @@ export default function Returns() {
             const { data, error } = await supabase
                 .from("returns")
                 .select(
-                    "id, invoice_code, status, rejection_reason, add_to_inventory, created_at, customer_name, phone_number, barcode, product_name, quantity, refund_amount, reason, invoice_date, processed_by"
+                    "id, invoice_code, status, rejection_reason, add_to_inventory, created_at, customer_name, phone_number, barcode, product_name, quantity, refund_amount, reason, invoice_date, processed_by, replacement_type, replacement_barcode, replacement_product_name, replacement_quantity, replacement_done"
                 )
                 .order("created_at", { ascending: false })
                 .limit(50);
@@ -196,10 +233,7 @@ export default function Returns() {
                 if (item.key !== key) return item;
 
                 const maxQty = Number(item.remaining_qty || 0);
-                const nextValue = Math.min(
-                    Math.max(Number(value || 0), 0),
-                    maxQty
-                );
+                const nextValue = Math.min(Math.max(Number(value || 0), 0), maxQty);
 
                 return {
                     ...item,
@@ -254,18 +288,18 @@ export default function Returns() {
 
             const groupedItems = groupInvoiceItems(items || []);
 
-            const acceptedReturns = groupedItems.length
+            const processedReturns = groupedItems.length
                 ? await supabase
                     .from("returns")
                     .select("barcode, quantity, status")
                     .eq("invoice_code", invoice.invoice_code)
-                    .eq("status", "Accepted")
+                    .in("status", ["Accepted", "Replacement"])
                 : { data: [], error: null };
 
-            if (acceptedReturns.error) throw acceptedReturns.error;
+            if (processedReturns.error) throw processedReturns.error;
 
             const acceptedMap = new Map();
-            (acceptedReturns.data || []).forEach((row) => {
+            (processedReturns.data || []).forEach((row) => {
                 const key = String(row.barcode || "-");
                 acceptedMap.set(key, (acceptedMap.get(key) || 0) + Number(row.quantity || 0));
             });
@@ -314,6 +348,226 @@ export default function Returns() {
         return reasonType.trim();
     };
 
+    const searchReplacementProducts = async (query) => {
+        const q = String(query || "").trim();
+
+        if (!q) {
+            setReplacementSearchResults([]);
+            return;
+        }
+
+        setReplacementSearching(true);
+        try {
+            const { data, error } = await supabase
+                .from("products")
+                .select("id, barcode, date, style_code, size, product_code, quantity, mrp, brand")
+                .or(`barcode.ilike.%${q}%,product_code.ilike.%${q}%,style_code.ilike.%${q}%`)
+                .order("created_at", { ascending: false })
+                .limit(12);
+
+            if (error) throw error;
+
+            setReplacementSearchResults((data || []).map((p) => ({
+                ...p,
+                product_name: buildProductLabel(p),
+            })));
+        } catch (err) {
+            console.error(err);
+            setInvoiceMessage(err?.message || "Could not search replacement products.");
+            setReplacementSearchResults([]);
+        } finally {
+            setReplacementSearching(false);
+        }
+    };
+
+    useEffect(() => {
+        if (statusType !== "Replacement") return;
+
+        const q = replacementSearchQuery.trim();
+        if (!q) {
+            setReplacementSearchResults([]);
+            return;
+        }
+
+        const timer = setTimeout(() => {
+            searchReplacementProducts(q);
+        }, 250);
+
+        return () => clearTimeout(timer);
+    }, [replacementSearchQuery, statusType]);
+
+    const selectReplacementProduct = (product) => {
+        setSelectedReplacementProduct({
+            ...product,
+            product_name: buildProductLabel(product),
+        });
+        setReplacementQuantity(1);
+    };
+
+    const removeReplacementSelection = () => {
+        setSelectedReplacementProduct(null);
+        setReplacementQuantity(1);
+    };
+
+    const applyStockDelta = async (productId, delta, fallbackData = null) => {
+        if (!productId || !delta) return null;
+
+        const { data: product, error: fetchError } = await supabase
+            .from("products")
+            .select("id, barcode, date, style_code, size, product_code, quantity, mrp, brand")
+            .eq("id", productId)
+            .maybeSingle();
+
+        if (fetchError) throw fetchError;
+
+        if (product) {
+            const nextQty = Number(product.quantity || 0) + Number(delta || 0);
+
+            if (nextQty <= 0) {
+                const { error } = await supabase.from("products").delete().eq("id", productId);
+                if (error) throw error;
+            } else {
+                const { error } = await supabase
+                    .from("products")
+                    .update({ quantity: nextQty })
+                    .eq("id", productId);
+
+                if (error) throw error;
+            }
+
+            return { ...product, quantity: Math.max(nextQty, 0) };
+        }
+
+        if (delta > 0 && fallbackData) {
+            const { data: inserted, error: insertError } = await supabase
+                .from("products")
+                .insert([
+                    {
+                        id: productId,
+                        barcode: fallbackData.barcode || "",
+                        date: fallbackData.date || "",
+                        style_code: fallbackData.style_code || "",
+                        size: fallbackData.size || "",
+                        product_code: fallbackData.product_code || "Product",
+                        quantity: delta,
+                        mrp: Number(fallbackData.mrp || 0),
+                        brand: fallbackData.brand || "",
+                    },
+                ])
+                .select("*")
+                .single();
+
+            if (insertError) throw insertError;
+            return inserted;
+        }
+
+        return null;
+    };
+
+    const restoreInvoiceItemsAfterReplacement = async ({
+        invoiceId,
+        originalItems,
+        selectedRows,
+        replacementProduct,
+        replacementQty,
+        invoiceSnapshot,
+    }) => {
+        const returnQtyByKey = new Map(
+            selectedRows.map((row) => [row.key, Number(row.return_qty || 0)])
+        );
+
+        const adjustedItems = originalItems
+            .map((item) => {
+                const returnQty = Number(returnQtyByKey.get(item.key) || 0);
+                const remainingQty = Math.max(Number(item.sold_qty || 0) - returnQty, 0);
+
+                return {
+                    ...item,
+                    quantity: remainingQty,
+                    subtotal: remainingQty * Number(item.price || 0),
+                };
+            })
+            .filter((item) => Number(item.quantity || 0) > 0);
+
+        if (replacementProduct && Number(replacementQty || 0) > 0) {
+            const replacementBarcode = String(replacementProduct.barcode || "-");
+            const existingIndex = adjustedItems.findIndex(
+                (item) =>
+                    String(item.barcode || "-") === replacementBarcode ||
+                    Number(item.product_id || 0) === Number(replacementProduct.id || 0)
+            );
+
+            if (existingIndex >= 0) {
+                adjustedItems[existingIndex].quantity += Number(replacementQty || 0);
+                adjustedItems[existingIndex].subtotal =
+                    Number(adjustedItems[existingIndex].quantity || 0) *
+                    Number(adjustedItems[existingIndex].price || 0);
+            } else {
+                adjustedItems.push({
+                    key: `replacement-${replacementProduct.id}`,
+                    product_id: replacementProduct.id,
+                    barcode: replacementProduct.barcode || "-",
+                    product_name: buildProductLabel(replacementProduct),
+                    brand: replacementProduct.brand || "-",
+                    sold_qty: Number(replacementQty || 0),
+                    quantity: Number(replacementQty || 0),
+                    price: Number(replacementProduct.mrp || 0),
+                    subtotal: Number(replacementQty || 0) * Number(replacementProduct.mrp || 0),
+                });
+            }
+        }
+
+        const subtotal = adjustedItems.reduce(
+            (sum, item) => sum + Number(item.quantity || 0) * Number(item.price || 0),
+            0
+        );
+
+        const totalItems = adjustedItems.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+        const finalAmount = Math.max(
+            subtotal - Number(invoiceSnapshot.discount_amount || 0),
+            0
+        );
+
+        const { error: deleteItemsError } = await supabase
+            .from("invoice_items")
+            .delete()
+            .eq("invoice_id", invoiceId);
+
+        if (deleteItemsError) throw deleteItemsError;
+
+        if (adjustedItems.length > 0) {
+            const insertPayload = adjustedItems.map((item) => ({
+                invoice_id: invoiceId,
+                product_id: item.product_id || null,
+                quantity: Number(item.quantity || 0),
+                price: Number(item.price || 0),
+                subtotal: Number(item.quantity || 0) * Number(item.price || 0),
+                barcode: item.barcode || "-",
+                product_name: item.product_name || "-",
+                brand: item.brand || "-",
+            }));
+
+            const { error: insertItemsError } = await supabase
+                .from("invoice_items")
+                .insert(insertPayload);
+
+            if (insertItemsError) throw insertItemsError;
+        }
+
+        const { error: invoiceUpdateError } = await supabase
+            .from("invoices")
+            .update({
+                subtotal,
+                final_amount: finalAmount,
+                total_items: totalItems,
+            })
+            .eq("id", invoiceId);
+
+        if (invoiceUpdateError) throw invoiceUpdateError;
+
+        return { subtotal, finalAmount, totalItems };
+    };
+
     const processReturn = async () => {
         if (!invoiceMeta?.invoice) {
             setInvoiceMessage("Load an invoice first.");
@@ -338,15 +592,37 @@ export default function Returns() {
             return;
         }
 
+        const isReplacement = statusType === "Replacement";
+        const selectedReplacementQty = Number(replacementQuantity || 0);
+
+        if (isReplacement) {
+            if (!selectedReplacementProduct) {
+                setInvoiceMessage("Please select a replacement product.");
+                return;
+            }
+
+            if (selectedReplacementQty <= 0) {
+                setInvoiceMessage("Enter a valid replacement quantity.");
+                return;
+            }
+
+            if (selectedReplacementQty > Number(selectedReplacementProduct.quantity || 0)) {
+                setInvoiceMessage("Not enough stock available for the replacement product.");
+                return;
+            }
+        }
+
         setProcessing(true);
         setInvoiceMessage("");
 
         const processedReturnIds = [];
-        const reversedStockAdjustments = [];
+        const stockOps = [];
         const customerName = invoiceMeta.customer?.customer_name || "Customer";
         const phone = invoiceMeta.customer?.phone_number || "";
         const processedBy = settings.business_name || "SVS TRADERS";
         const invoiceDateValue = invoiceMeta.invoice.created_at;
+        const invoiceSnapshot = { ...invoiceMeta.invoice };
+        const originalItemsSnapshot = invoiceItems.map((item) => ({ ...item }));
 
         try {
             for (const item of selectedRows) {
@@ -354,14 +630,16 @@ export default function Returns() {
                 const refundAmount = statusType === "Accepted" ? qty * Number(item.price || 0) : 0;
 
                 if (qty > Number(item.remaining_qty || 0)) {
-                    throw new Error(`Return quantity for ${item.product_name} exceeds remaining quantity.`);
+                    throw new Error(
+                        `Return quantity for ${item.product_name} exceeds remaining quantity.`
+                    );
                 }
 
                 const payload = {
                     invoice_code: invoiceMeta.invoice.invoice_code,
                     status: statusType,
                     rejection_reason: statusType === "Rejected" ? finalReason : null,
-                    add_to_inventory: statusType === "Accepted" ? Boolean(addToInventory) : false,
+                    add_to_inventory: statusType === "Accepted" || statusType === "Replacement",
                     customer_name: customerName,
                     phone_number: phone || null,
                     barcode: item.barcode,
@@ -371,6 +649,14 @@ export default function Returns() {
                     reason: finalReason,
                     invoice_date: invoiceDateValue,
                     processed_by: processedBy,
+                    replacement_type: isReplacement ? "Replacement" : null,
+                    replacement_barcode: isReplacement ? selectedReplacementProduct.barcode : null,
+                    replacement_product_name: isReplacement
+                        ? buildProductLabel(selectedReplacementProduct)
+                        : null,
+                    replacement_product_id: isReplacement ? selectedReplacementProduct.id : null,
+                    replacement_quantity: isReplacement ? selectedReplacementQty : 0,
+                    replacement_done: isReplacement,
                 };
 
                 const { data: insertedReturn, error: insertError } = await supabase
@@ -383,64 +669,113 @@ export default function Returns() {
 
                 processedReturnIds.push(insertedReturn.id);
 
-                if (statusType === "Accepted" && addToInventory) {
-                    const { data: product, error: productError } = await supabase
-                        .from("products")
-                        .select("id, quantity")
-                        .eq("barcode", item.barcode)
-                        .maybeSingle();
-
-                    if (productError) throw productError;
-
-                    if (!product) {
-                        throw new Error(`Product not found for barcode ${item.barcode}.`);
+                const restoredProduct = await applyStockDelta(
+                    item.product_id,
+                    qty,
+                    {
+                        barcode: item.barcode || "",
+                        date: "",
+                        style_code: "",
+                        size: "",
+                        product_code: item.product_name || "Product",
+                        mrp: item.price || 0,
+                        brand: item.brand || "",
                     }
+                );
 
-                    const nextQty = Number(product.quantity || 0) + qty;
-
-                    const { error: updateError } = await supabase
-                        .from("products")
-                        .update({ quantity: nextQty })
-                        .eq("id", product.id);
-
-                    if (updateError) throw updateError;
-
-                    reversedStockAdjustments.push({
-                        productId: product.id,
-                        qty,
-                    });
-                }
+                stockOps.push({
+                    productId: restoredProduct?.id || item.product_id,
+                    delta: qty,
+                    fallbackData: {
+                        barcode: item.barcode || "",
+                        date: "",
+                        style_code: "",
+                        size: "",
+                        product_code: item.product_name || "Product",
+                        mrp: item.price || 0,
+                        brand: item.brand || "",
+                    },
+                });
             }
 
-            if (settings.whatsapp_receipt && phone) {
-                const summary = selectedRows
-                    .map((item) => {
-                        const qty = Number(item.return_qty || 0);
-                        const refundAmount = statusType === "Accepted" ? qty * Number(item.price || 0) : 0;
-                        return `${item.product_name} x ${qty} = ₹${money(refundAmount)}`;
-                    })
-                    .join("\n");
+            if (isReplacement) {
+                const replacementProduct = await applyStockDelta(
+                    selectedReplacementProduct.id,
+                    -selectedReplacementQty,
+                    null
+                );
 
-                const body =
-                    statusType === "Accepted"
-                        ? `Hello ${customerName},
+                stockOps.push({
+                    productId: replacementProduct?.id || selectedReplacementProduct.id,
+                    delta: -selectedReplacementQty,
+                    fallbackData: {
+                        barcode: selectedReplacementProduct.barcode || "",
+                        date: selectedReplacementProduct.date || "",
+                        style_code: selectedReplacementProduct.style_code || "",
+                        size: selectedReplacementProduct.size || "",
+                        product_code: buildProductLabel(selectedReplacementProduct),
+                        mrp: selectedReplacementProduct.mrp || 0,
+                        brand: selectedReplacementProduct.brand || "",
+                    },
+                });
+
+                await restoreInvoiceItemsAfterReplacement({
+                    invoiceId: invoiceMeta.invoice.id,
+                    originalItems: originalItemsSnapshot,
+                    selectedRows,
+                    replacementProduct: selectedReplacementProduct,
+                    replacementQty: selectedReplacementQty,
+                    invoiceSnapshot,
+                });
+            }
+
+            const returnedSummary = selectedRows
+                .map((item) => {
+                    const qty = Number(item.return_qty || 0);
+                    const amount = qty * Number(item.price || 0);
+                    return `${item.product_name} x ${qty} = ₹${money(amount)}`;
+                })
+                .join("\n");
+
+            let body = "";
+
+            if (statusType === "Accepted") {
+                body = `Hello ${customerName},
 
 Your return for invoice ${invoiceMeta.invoice.invoice_code} has been accepted.
 
-${summary}
+${returnedSummary}
 
 Refund: ₹${money(selectedRefundTotal)}
 Reason: ${finalReason}
 
-Thank you.`
-                        : `Hello ${customerName},
+Thank you.`;
+            } else if (statusType === "Replacement") {
+                body = `Hello ${customerName},
+
+Your replacement for invoice ${invoiceMeta.invoice.invoice_code} has been completed.
+
+Returned Items:
+${returnedSummary}
+
+Replacement Item:
+${buildProductLabel(selectedReplacementProduct)} x ${selectedReplacementQty}
+Barcode: ${selectedReplacementProduct.barcode || "-"}
+
+Reason: ${finalReason}
+
+Thank you for shopping with ${settings.business_name || "SVS TRADERS"} 😊`;
+            } else {
+                body = `Hello ${customerName},
 
 Your return for invoice ${invoiceMeta.invoice.invoice_code} has been rejected.
 
 Reason: ${finalReason}
 
 Please contact the store if you need help.`;
+            }
 
+            if (settings.whatsapp_receipt && phone) {
                 const waLink = buildWhatsappLink(phone, body);
                 if (waLink) {
                     window.open(waLink, "_blank", "noopener,noreferrer");
@@ -451,7 +786,9 @@ Please contact the store if you need help.`;
             setInvoiceMessage(
                 statusType === "Accepted"
                     ? "Return accepted successfully. Stock updated and customer notified."
-                    : "Return rejected successfully. Customer notified."
+                    : statusType === "Replacement"
+                        ? "Replacement completed successfully. Invoice updated and customer notified."
+                        : "Return rejected successfully. Customer notified."
             );
 
             resetLoadedInvoice();
@@ -464,21 +801,100 @@ Please contact the store if you need help.`;
                     await supabase.from("returns").delete().in("id", processedReturnIds);
                 }
 
-                for (const adj of reversedStockAdjustments) {
-                    const { data: product } = await supabase
+                for (const op of stockOps.reverse()) {
+                    const inverseDelta = -Number(op.delta || 0);
+                    const { data: product, error: productError } = await supabase
                         .from("products")
-                        .select("id, quantity")
-                        .eq("id", adj.productId)
+                        .select("id, barcode, date, style_code, size, product_code, quantity, mrp, brand")
+                        .eq("id", op.productId)
                         .maybeSingle();
 
+                    if (productError) throw productError;
+
                     if (product) {
-                        await supabase
-                            .from("products")
-                            .update({
-                                quantity: Number(product.quantity || 0) - Number(adj.qty || 0),
-                            })
-                            .eq("id", adj.productId);
+                        const nextQty = Number(product.quantity || 0) + inverseDelta;
+
+                        if (nextQty <= 0) {
+                            const { error: deleteError } = await supabase
+                                .from("products")
+                                .delete()
+                                .eq("id", op.productId);
+
+                            if (deleteError) throw deleteError;
+                        } else {
+                            const { error: updateError } = await supabase
+                                .from("products")
+                                .update({ quantity: nextQty })
+                                .eq("id", op.productId);
+
+                            if (updateError) throw updateError;
+                        }
+                    } else if (inverseDelta > 0 && op.fallbackData) {
+                        const { error: insertError } = await supabase.from("products").insert([
+                            {
+                                id: op.productId,
+                                barcode: op.fallbackData.barcode || "",
+                                date: op.fallbackData.date || "",
+                                style_code: op.fallbackData.style_code || "",
+                                size: op.fallbackData.size || "",
+                                product_code: op.fallbackData.product_code || "Product",
+                                quantity: inverseDelta,
+                                mrp: Number(op.fallbackData.mrp || 0),
+                                brand: op.fallbackData.brand || "",
+                            },
+                        ]);
+
+                        if (insertError) throw insertError;
                     }
+                }
+
+                if (statusType === "Replacement") {
+                    const { error: deleteItemsError } = await supabase
+                        .from("invoice_items")
+                        .delete()
+                        .eq("invoice_id", invoiceSnapshot.id);
+
+                    if (deleteItemsError) throw deleteItemsError;
+
+                    const restoreItemsPayload = originalItemsSnapshot.map((item) => ({
+                        invoice_id: invoiceSnapshot.id,
+                        product_id: item.product_id || null,
+                        quantity: Number(item.sold_qty || 0),
+                        price: Number(item.price || 0),
+                        subtotal: Number(item.sold_qty || 0) * Number(item.price || 0),
+                        barcode: item.barcode || "-",
+                        product_name: item.product_name || "-",
+                        brand: item.brand || "-",
+                    }));
+
+                    if (restoreItemsPayload.length > 0) {
+                        const { error: restoreItemsError } = await supabase
+                            .from("invoice_items")
+                            .insert(restoreItemsPayload);
+
+                        if (restoreItemsError) throw restoreItemsError;
+                    }
+
+                    const restoreSubtotal = originalItemsSnapshot.reduce(
+                        (sum, item) => sum + Number(item.sold_qty || 0) * Number(item.price || 0),
+                        0
+                    );
+
+                    const restoreItemsTotal = originalItemsSnapshot.reduce(
+                        (sum, item) => sum + Number(item.sold_qty || 0),
+                        0
+                    );
+
+                    const { error: restoreInvoiceError } = await supabase
+                        .from("invoices")
+                        .update({
+                            subtotal: restoreSubtotal,
+                            final_amount: Number(invoiceSnapshot.final_amount || 0),
+                            total_items: restoreItemsTotal,
+                        })
+                        .eq("id", invoiceSnapshot.id);
+
+                    if (restoreInvoiceError) throw restoreInvoiceError;
                 }
             } catch (rollbackError) {
                 console.error("Rollback failed:", rollbackError);
@@ -500,7 +916,11 @@ Please contact the store if you need help.`;
 
             doc.setFont("helvetica", "normal");
             doc.setFontSize(10);
-            doc.text(`Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`, 14, 23);
+            doc.text(
+                `Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
+                14,
+                23
+            );
             doc.text(`Records: ${returnHistory.length}`, 14, 29);
 
             autoTable(doc, {
@@ -516,6 +936,7 @@ Please contact the store if you need help.`;
                         "Refund",
                         "Status",
                         "Reason",
+                        "Replacement",
                     ],
                 ],
                 body:
@@ -530,8 +951,11 @@ Please contact the store if you need help.`;
                             `₹${money(row.refund_amount)}`,
                             row.status || "-",
                             row.rejection_reason || row.reason || "-",
+                            row.replacement_product_name
+                                ? `${row.replacement_product_name} x ${row.replacement_quantity || 0}`
+                                : "-",
                         ])
-                        : [["-", "-", "-", "-", "-", 0, "₹0.00", "-", "-"]],
+                        : [["-", "-", "-", "-", "-", 0, "₹0.00", "-", "-", "-"]],
                 styles: { fontSize: 8, cellPadding: 2 },
                 headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
                 alternateRowStyles: { fillColor: [245, 247, 255] },
@@ -567,7 +991,7 @@ Please contact the store if you need help.`;
                 <div className="mb-6">
                     <h1 className="text-4xl lg:text-5xl font-bold">Returns</h1>
                     <p className="mt-2 text-white/70">
-                        Search an invoice, verify the return window, choose products, and restore stock.
+                        Search an invoice, verify the 7-day return window, process refunds, or do product replacement.
                     </p>
                 </div>
 
@@ -612,15 +1036,17 @@ Please contact the store if you need help.`;
                                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                                     <div>
                                         <h2 className="text-2xl font-bold">Invoice Details</h2>
-                                        <div className="mt-2 text-white/70">{invoiceMeta.invoice.invoice_code}</div>
+                                        <div className="mt-2 text-white/70">
+                                            {invoiceMeta.invoice.invoice_code}
+                                        </div>
                                     </div>
 
                                     <div className="rounded-2xl bg-white/5 border border-white/10 px-4 py-3 text-sm">
                                         <div>Invoice Date: {formatDateOnly(invoiceMeta.invoiceDate)}</div>
-                                        <div className="mt-1">Return Limit: {formatDateOnly(invoiceMeta.limitDate)}</div>
                                         <div className="mt-1">
-                                            Status: {renderStatusBadge(invoiceMeta.allowed)}
+                                            Return Limit: {formatDateOnly(invoiceMeta.limitDate)}
                                         </div>
+                                        <div className="mt-1">Status: {renderStatusBadge(invoiceMeta.allowed)}</div>
                                     </div>
                                 </div>
 
@@ -668,11 +1094,16 @@ Please contact the store if you need help.`;
                                             ) : (
                                                 invoiceItems.map((item) => {
                                                     const qty = Number(item.return_qty || 0);
-                                                    const refund = statusType === "Accepted" ? qty * Number(item.price || 0) : 0;
+                                                    const refund =
+                                                        statusType === "Accepted"
+                                                            ? qty * Number(item.price || 0)
+                                                            : 0;
 
                                                     return (
                                                         <tr key={item.key} className="border-b border-white/5">
-                                                            <td className="py-3 pr-4 font-medium">{item.product_name}</td>
+                                                            <td className="py-3 pr-4 font-medium">
+                                                                {item.product_name}
+                                                            </td>
                                                             <td className="py-3 pr-4">{item.barcode}</td>
                                                             <td className="py-3 pr-4">{item.sold_qty}</td>
                                                             <td className="py-3 pr-4">{item.returned_qty}</td>
@@ -682,7 +1113,9 @@ Please contact the store if you need help.`;
                                                                     min="0"
                                                                     max={item.remaining_qty}
                                                                     value={item.return_qty}
-                                                                    onChange={(e) => updateReturnQty(item.key, e.target.value)}
+                                                                    onChange={(e) =>
+                                                                        updateReturnQty(item.key, e.target.value)
+                                                                    }
                                                                     className="w-24 rounded-xl border border-white/10 bg-[#101725] px-3 py-2 text-white outline-none"
                                                                 />
                                                             </td>
@@ -703,7 +1136,9 @@ Please contact the store if you need help.`;
                                     </div>
                                     <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                                         <div className="text-sm text-white/50">Selected Refund</div>
-                                        <div className="mt-1 text-2xl font-bold">₹{money(selectedRefundTotal)}</div>
+                                        <div className="mt-1 text-2xl font-bold">
+                                            ₹{money(selectedRefundTotal)}
+                                        </div>
                                     </div>
                                     <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
                                         <div className="text-sm text-white/50">Action</div>
@@ -720,6 +1155,7 @@ Please contact the store if you need help.`;
                                             className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
                                         >
                                             <option value="Accepted">Accepted</option>
+                                            <option value="Replacement">Replacement</option>
                                             <option value="Rejected">Rejected</option>
                                         </select>
                                     </div>
@@ -750,6 +1186,136 @@ Please contact the store if you need help.`;
                                     </div>
                                 </div>
 
+                                {statusType === "Replacement" ? (
+                                    <section className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-4">
+                                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                            <div>
+                                                <h3 className="text-xl font-bold">Replacement Product</h3>
+                                                <p className="text-sm text-white/50 mt-1">
+                                                    Scan barcode or type product code/style code to search inventory.
+                                                </p>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={removeReplacementSelection}
+                                                className="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold hover:bg-white/15"
+                                            >
+                                                Clear Selection
+                                            </button>
+                                        </div>
+
+                                        <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                                            <input
+                                                value={replacementSearchQuery}
+                                                onChange={(e) => setReplacementSearchQuery(e.target.value)}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === "Enter") {
+                                                        e.preventDefault();
+                                                        searchReplacementProducts(replacementSearchQuery);
+                                                    }
+                                                }}
+                                                placeholder="Scan or type barcode / product code / style code"
+                                                className="flex-1 rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() =>
+                                                    searchReplacementProducts(replacementSearchQuery)
+                                                }
+                                                disabled={replacementSearching}
+                                                className="rounded-2xl px-6 py-3 font-semibold text-white transition disabled:opacity-50"
+                                                style={{ backgroundColor: "var(--accent-color, #2563eb)" }}
+                                            >
+                                                {replacementSearching ? "Searching..." : "Search"}
+                                            </button>
+                                        </div>
+
+                                        {selectedReplacementProduct ? (
+                                            <div className="mt-4 rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
+                                                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                                    <div>
+                                                        <div className="font-bold text-lg">
+                                                            {buildProductLabel(selectedReplacementProduct)}
+                                                        </div>
+                                                        <div className="text-sm text-white/70 mt-1">
+                                                            Barcode: {selectedReplacementProduct.barcode || "-"}
+                                                        </div>
+                                                        <div className="text-sm text-white/70 mt-1">
+                                                            Brand: {selectedReplacementProduct.brand || "-"}
+                                                        </div>
+                                                        <div className="text-sm text-white/70 mt-1">
+                                                            Stock: {selectedReplacementProduct.quantity || 0}
+                                                        </div>
+                                                        <div className="text-sm text-white/70 mt-1">
+                                                            MRP: ₹{money(selectedReplacementProduct.mrp)}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="min-w-[220px]">
+                                                        <label className="mb-2 block text-sm text-white/70">
+                                                            Replacement Quantity
+                                                        </label>
+                                                        <input
+                                                            type="number"
+                                                            min="1"
+                                                            max={selectedReplacementProduct.quantity || 1}
+                                                            value={replacementQuantity}
+                                                            onChange={(e) =>
+                                                                setReplacementQuantity(e.target.value)
+                                                            }
+                                                            className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
+                                                        />
+                                                        <div className="mt-2 text-sm text-white/70">
+                                                            Replacement Total: ₹{money(replacementTotal)}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="mt-4 rounded-2xl border border-white/10 bg-[#101725] p-4 text-white/50">
+                                                No replacement product selected yet.
+                                            </div>
+                                        )}
+
+                                        {replacementSearchResults.length > 0 ? (
+                                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                                {replacementSearchResults.map((product) => (
+                                                    <div
+                                                        key={product.id}
+                                                        className="rounded-2xl border border-white/10 bg-[#101725] p-4"
+                                                    >
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div>
+                                                                <div className="font-semibold">
+                                                                    {buildProductLabel(product)}
+                                                                </div>
+                                                                <div className="mt-1 text-sm text-white/50">
+                                                                    {product.barcode}
+                                                                </div>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => selectReplacementProduct(product)}
+                                                                disabled={Number(product.quantity || 0) <= 0}
+                                                                className="rounded-xl bg-emerald-600 px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                                                            >
+                                                                Select
+                                                            </button>
+                                                        </div>
+
+                                                        <div className="mt-3 grid grid-cols-2 gap-3 text-sm text-white/70">
+                                                            <div>Stock: {product.quantity || 0}</div>
+                                                            <div>MRP: ₹{money(product.mrp)}</div>
+                                                            <div>Brand: {product.brand || "-"}</div>
+                                                            <div>Size: {product.size || "-"}</div>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                    </section>
+                                ) : null}
+
                                 <div className="mt-4">
                                     <label className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
                                         <input
@@ -762,7 +1328,7 @@ Please contact the store if you need help.`;
                                         <span>
                                             Add stock back to inventory
                                             <span className="block text-sm text-white/50">
-                                                Used when return is accepted.
+                                                Used for accepted returns. Replacement always restores the original product.
                                             </span>
                                         </span>
                                     </label>
@@ -784,7 +1350,9 @@ Please contact the store if you need help.`;
                                             ? "Processing..."
                                             : statusType === "Accepted"
                                                 ? "Process Accepted Return"
-                                                : "Process Rejected Return"}
+                                                : statusType === "Replacement"
+                                                    ? "Process Replacement"
+                                                    : "Process Rejected Return"}
                                     </button>
 
                                     <button
@@ -838,7 +1406,9 @@ Please contact the store if you need help.`;
                                         const badgeClass =
                                             row.status === "Accepted"
                                                 ? "bg-emerald-500/15 text-emerald-300"
-                                                : "bg-red-500/15 text-red-300";
+                                                : row.status === "Replacement"
+                                                    ? "bg-blue-500/15 text-blue-300"
+                                                    : "bg-red-500/15 text-red-300";
 
                                         return (
                                             <div
@@ -847,12 +1417,16 @@ Please contact the store if you need help.`;
                                             >
                                                 <div className="flex items-start justify-between gap-3">
                                                     <div>
-                                                        <div className="font-semibold">{row.product_name || "-"}</div>
+                                                        <div className="font-semibold">
+                                                            {row.product_name || "-"}
+                                                        </div>
                                                         <div className="mt-1 text-sm text-white/50">
                                                             Invoice: {row.invoice_code || "-"}
                                                         </div>
                                                     </div>
-                                                    <span className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}>
+                                                    <span
+                                                        className={`rounded-full px-3 py-1 text-xs font-semibold ${badgeClass}`}
+                                                    >
                                                         {row.status || "-"}
                                                     </span>
                                                 </div>
@@ -864,6 +1438,19 @@ Please contact the store if you need help.`;
                                                     <div>Qty: {row.quantity || 0}</div>
                                                     <div>Refund: ₹{money(row.refund_amount)}</div>
                                                     <div>Reason: {row.rejection_reason || row.reason || "-"}</div>
+                                                    {row.replacement_product_name ? (
+                                                        <>
+                                                            <div>
+                                                                Replacement: {row.replacement_product_name || "-"}
+                                                            </div>
+                                                            <div>
+                                                                Replacement Qty: {row.replacement_quantity || 0}
+                                                            </div>
+                                                            <div>
+                                                                Replacement Barcode: {row.replacement_barcode || "-"}
+                                                            </div>
+                                                        </>
+                                                    ) : null}
                                                     <div>Date: {formatDateTime(row.created_at)}</div>
                                                 </div>
                                             </div>
@@ -887,9 +1474,9 @@ Please contact the store if you need help.`;
                                     </div>
                                 </div>
                                 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">
-                                    <div className="text-sm text-white/50">Rejected</div>
+                                    <div className="text-sm text-white/50">Replacement</div>
                                     <div className="mt-1 text-2xl font-bold">
-                                        {returnHistory.filter((r) => r.status === "Rejected").length}
+                                        {returnHistory.filter((r) => r.status === "Replacement").length}
                                     </div>
                                 </div>
                                 <div className="rounded-2xl bg-white/5 border border-white/10 p-4">

@@ -78,17 +78,7 @@ function isSameLocalDay(a, b) {
 
 function isSameLocalMonth(a, b) {
     if (!a || !b) return false;
-    return (
-        a.getFullYear() === b.getFullYear() &&
-        a.getMonth() === b.getMonth()
-    );
-}
-
-function isWithinLastDays(date, reference, days) {
-    if (!date) return false;
-    const start = startOfDay(daysAgo(reference, days - 1));
-    const end = endOfDay(reference);
-    return date >= start && date <= end;
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
 function StatCard({ title, value, hint, icon: Icon, accentColor, tone = "blue" }) {
@@ -215,7 +205,7 @@ export default function Dashboard() {
                 supabase
                     .from("products")
                     .select(
-                        "id, barcode, product_name, product_code, style_code, size, brand, quantity, mrp, selling_price, low_stock_threshold, created_at"
+                        "id, barcode, product_code, style_code, size, brand, quantity, mrp, created_at"
                     ),
 
                 supabase
@@ -235,7 +225,11 @@ export default function Dashboard() {
             const todayData = todayRes.data || [];
             const weekData = weekRes.data || [];
             const monthData = monthRes.data || [];
-            const productsData = productsRes.data || [];
+            const productsData = (productsRes.data || []).map((product) => ({
+                ...product,
+                product_name: product.product_code || "Product",
+                selling_price: product.mrp ?? 0,
+            }));
             const returnsRows = returnsRes.data || [];
 
             setTodayInvoices(todayData);
@@ -359,7 +353,7 @@ export default function Dashboard() {
 
         const inventoryValue = products.reduce((sum, product) => {
             const qty = Number(product.quantity || 0);
-            const price = Number(product.selling_price ?? product.mrp ?? 0);
+            const price = Number(product.mrp || 0);
             return sum + qty * price;
         }, 0);
 
@@ -759,10 +753,7 @@ export default function Dashboard() {
                             </div>
                         </SectionCard>
 
-                        <SectionCard
-                            title="Quick Actions"
-                            subtitle="Common tasks for fast workflow"
-                        >
+                        <SectionCard title="Quick Actions" subtitle="Common tasks for fast workflow">
                             <div className="grid grid-cols-2 gap-3">
                                 {[
                                     { label: "Create Bill", icon: ShoppingCart, path: "/billing" },

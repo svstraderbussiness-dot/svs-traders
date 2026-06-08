@@ -61,6 +61,14 @@ function isAcceptedReturn(row) {
     return String(row?.status || "").toLowerCase() === "accepted";
 }
 
+function isReplacementReturn(row) {
+    return String(row?.status || "").toLowerCase() === "replacement";
+}
+
+function isRejectedReturn(row) {
+    return String(row?.status || "").toLowerCase() === "rejected";
+}
+
 export default function Reports() {
     const monthOptions = useMemo(() => getMonthOptions(12), []);
     const [reportMode, setReportMode] = useState("daily");
@@ -104,7 +112,9 @@ export default function Reports() {
 
                 supabase
                     .from("returns")
-                    .select("id, invoice_code, barcode, product_name, quantity, refund_amount, status, created_at, reason, rejection_reason, customer_name, phone_number, invoice_date, processed_by, add_to_inventory")
+                    .select(
+                        "id, invoice_code, barcode, product_name, quantity, refund_amount, status, created_at, reason, rejection_reason, customer_name, phone_number, invoice_date, processed_by, add_to_inventory, replacement_type, replacement_barcode, replacement_product_name, replacement_quantity, replacement_product_id, replacement_done"
+                    )
                     .gte("created_at", range.start)
                     .lt("created_at", range.end)
                     .order("created_at", { ascending: false }),
@@ -129,7 +139,9 @@ export default function Reports() {
 
             const { data: itemsData, error: itemsError } = await supabase
                 .from("invoice_items")
-                .select("*")
+                .select(
+                    "id, invoice_id, product_id, quantity, price, subtotal, barcode, product_name, brand"
+                )
                 .in("invoice_id", invoiceIds);
 
             if (itemsError) throw itemsError;
@@ -155,40 +167,26 @@ export default function Reports() {
     const reportStats = useMemo(() => {
         const totalBills = invoices.length;
 
-        const grossIncome = invoices.reduce(
-            (sum, inv) => sum + Number(inv.final_amount || 0),
-            0
-        );
-
-        const totalDiscount = invoices.reduce(
-            (sum, inv) => sum + Number(inv.discount_amount || 0),
-            0
-        );
-
-        const grossItems = invoices.reduce(
-            (sum, inv) => sum + Number(inv.total_items || 0),
-            0
-        );
+        const grossIncome = invoices.reduce((sum, inv) => sum + Number(inv.final_amount || 0), 0);
+        const totalDiscount = invoices.reduce((sum, inv) => sum + Number(inv.discount_amount || 0), 0);
+        const grossItems = invoices.reduce((sum, inv) => sum + Number(inv.total_items || 0), 0);
 
         const paidBills = invoices.filter((inv) => inv.payment_status === "Paid").length;
         const pendingBills = invoices.filter((inv) => inv.payment_status !== "Paid").length;
-        const grossAvgBill = totalBills > 0 ? grossIncome / totalBills : 0;
 
         const acceptedReturns = returnsData.filter(isAcceptedReturn);
+        const replacementReturns = returnsData.filter(isReplacementReturn);
+        const rejectedReturns = returnsData.filter(isRejectedReturn);
 
-        const acceptedReturnRefund = acceptedReturns.reduce(
-            (sum, row) => sum + Number(row.refund_amount || 0),
-            0
-        );
-
-        const acceptedReturnQty = acceptedReturns.reduce(
-            (sum, row) => sum + Number(row.quantity || 0),
-            0
-        );
+        const acceptedReturnRefund = acceptedReturns.reduce((sum, row) => sum + Number(row.refund_amount || 0), 0);
+        const acceptedReturnQty = acceptedReturns.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+        const replacementQty = replacementReturns.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+        const replacementProductQty = replacementReturns.reduce((sum, row) => sum + Number(row.replacement_quantity || 0), 0);
 
         const totalIncome = Math.max(grossIncome - acceptedReturnRefund, 0);
         const totalItems = Math.max(grossItems - acceptedReturnQty, 0);
         const avgBill = totalBills > 0 ? totalIncome / totalBills : 0;
+        const grossAvgBill = totalBills > 0 ? grossIncome / totalBills : 0;
 
         const paymentCounts = invoices.reduce((acc, inv) => {
             const key = inv.payment_mode || "Unknown";
@@ -209,10 +207,8 @@ export default function Reports() {
         const returnRefundByBarcode = new Map();
 
         invoiceItems.forEach((item) => {
-            const productKey = String(
-                item.product_id || `${item.barcode || "-"}-${item.product_name || "-"}`
-            );
-            const productName = item.product_name || item.product_code || "Product";
+            const productKey = String(item.product_id || `${item.barcode || "-"}-${item.product_name || "-"}`);
+            const productName = item.product_name || "Product";
             const brandName = item.brand || "Unknown";
             const barcode = item.barcode || "-";
             const qty = Number(item.quantity || 0);
@@ -249,15 +245,8 @@ export default function Reports() {
             const barcode = row.barcode || "-";
             if (!barcode || barcode === "-") return;
 
-            returnQtyByBarcode.set(
-                barcode,
-                (returnQtyByBarcode.get(barcode) || 0) + Number(row.quantity || 0)
-            );
-
-            returnRefundByBarcode.set(
-                barcode,
-                (returnRefundByBarcode.get(barcode) || 0) + Number(row.refund_amount || 0)
-            );
+            returnQtyByBarcode.set(barcode, (returnQtyByBarcode.get(barcode) || 0) + Number(row.quantity || 0));
+            returnRefundByBarcode.set(barcode, (returnRefundByBarcode.get(barcode) || 0) + Number(row.refund_amount || 0));
         });
 
         const adjustedProducts = [...productMap.values()].map((item) => {
@@ -272,7 +261,6 @@ export default function Reports() {
         });
 
         const adjustedBrandMap = new Map();
-
         brandMap.forEach((item, brandName) => {
             adjustedBrandMap.set(brandName, {
                 brand: brandName,
@@ -284,11 +272,7 @@ export default function Reports() {
         acceptedReturns.forEach((row) => {
             const barcode = row.barcode || "-";
             const brandName = barcodeBrandMap.get(barcode) || "Unknown";
-            const entry = adjustedBrandMap.get(brandName) || {
-                brand: brandName,
-                qty: 0,
-                amount: 0,
-            };
+            const entry = adjustedBrandMap.get(brandName) || { brand: brandName, qty: 0, amount: 0 };
 
             entry.qty = Math.max(entry.qty - Number(row.quantity || 0), 0);
             entry.amount = Math.max(entry.amount - Number(row.refund_amount || 0), 0);
@@ -304,9 +288,22 @@ export default function Reports() {
             .filter((item) => item.qty > 0 || item.amount > 0);
 
         const recentInvoices = [...invoices].sort(
-            (a, b) =>
-                new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
+            (a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime()
         );
+
+        const replacementSummary = replacementReturns.map((row) => ({
+            id: row.id,
+            invoice_code: row.invoice_code || "-",
+            barcode: row.barcode || "-",
+            product_name: row.product_name || "-",
+            replacement_product_name: row.replacement_product_name || "-",
+            replacement_barcode: row.replacement_barcode || "-",
+            quantity: Number(row.quantity || 0),
+            replacement_quantity: Number(row.replacement_quantity || 0),
+            status: row.status || "-",
+            created_at: row.created_at || null,
+            reason: row.reason || row.rejection_reason || "-",
+        }));
 
         return {
             totalBills,
@@ -314,6 +311,8 @@ export default function Reports() {
             grossIncome,
             acceptedReturnRefund,
             acceptedReturnQty,
+            replacementQty,
+            replacementProductQty,
             totalDiscount,
             totalItems,
             grossItems,
@@ -326,16 +325,18 @@ export default function Reports() {
             topProducts,
             brandSummary,
             recentInvoices,
+            acceptedReturnsCount: acceptedReturns.length,
+            replacementReturnsCount: replacementReturns.length,
+            rejectedReturnsCount: rejectedReturns.length,
+            replacementSummary,
         };
     }, [invoices, invoiceItems, returnsData]);
-
     const downloadPDF = () => {
         try {
             const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
             const today = new Date();
             const fileDate = today.toISOString().slice(0, 10);
-            const title =
-                reportMode === "monthly" ? "Monthly Sales Report" : "Daily Sales Report";
+            const title = reportMode === "monthly" ? "Monthly Sales Report" : "Daily Sales Report";
 
             doc.setFont("helvetica", "bold");
             doc.setFontSize(18);
@@ -348,14 +349,15 @@ export default function Reports() {
             doc.text(`Total Bills: ${reportStats.totalBills}`, 14, 35);
             doc.text(`Total Items Sold: ${reportStats.totalItems}`, 14, 41);
             doc.text(`Accepted Return Qty: ${reportStats.acceptedReturnQty}`, 14, 47);
-            doc.text(`Accepted Return Refund: ₹${money(reportStats.acceptedReturnRefund)}`, 14, 53);
-            doc.text(`Paid Bills: ${reportStats.paidBills}`, 14, 59);
-            doc.text(`Pending Bills: ${reportStats.pendingBills}`, 14, 65);
-            doc.text(`Total Discount: ₹${money(reportStats.totalDiscount)}`, 14, 71);
-            doc.text(`Net Income: ₹${money(reportStats.totalIncome)}`, 14, 77);
+            doc.text(`Replacement Qty: ${reportStats.replacementQty}`, 14, 53);
+            doc.text(`Accepted Return Refund: ₹${money(reportStats.acceptedReturnRefund)}`, 14, 59);
+            doc.text(`Paid Bills: ${reportStats.paidBills}`, 14, 65);
+            doc.text(`Pending Bills: ${reportStats.pendingBills}`, 14, 71);
+            doc.text(`Total Discount: ₹${money(reportStats.totalDiscount)}`, 14, 77);
+            doc.text(`Net Income: ₹${money(reportStats.totalIncome)}`, 14, 83);
 
             autoTable(doc, {
-                startY: 84,
+                startY: 90,
                 head: [["Invoice", "Time", "Customer ID", "Items", "Payment", "Status", "Total"]],
                 body: reportStats.recentInvoices.map((inv) => [
                     inv.invoice_code || "-",
@@ -372,10 +374,10 @@ export default function Reports() {
                 margin: { left: 14, right: 14 },
             });
 
-            const afterInvoicesY = doc.lastAutoTable.finalY + 10;
+            let afterY = doc.lastAutoTable.finalY + 10;
 
             autoTable(doc, {
-                startY: afterInvoicesY,
+                startY: afterY,
                 head: [["Brand", "Qty Sold", "Amount"]],
                 body: reportStats.brandSummary.map((row) => [
                     row.brand,
@@ -388,10 +390,10 @@ export default function Reports() {
                 margin: { left: 14, right: 14 },
             });
 
-            const afterBrandY = doc.lastAutoTable.finalY + 10;
+            afterY = doc.lastAutoTable.finalY + 10;
 
             autoTable(doc, {
-                startY: afterBrandY,
+                startY: afterY,
                 head: [["Barcode", "Product", "Brand", "Qty Sold", "Amount"]],
                 body: reportStats.topProducts.map((item) => [
                     item.barcode,
@@ -406,13 +408,32 @@ export default function Reports() {
                 margin: { left: 14, right: 14 },
             });
 
+            if (reportStats.replacementSummary.length > 0) {
+                afterY = doc.lastAutoTable.finalY + 10;
+                autoTable(doc, {
+                    startY: afterY,
+                    head: [["Invoice", "Returned Item", "Replacement Item", "Qty", "Replacement Qty", "Status"]],
+                    body: reportStats.replacementSummary.map((row) => [
+                        row.invoice_code,
+                        `${row.product_name} (${row.barcode})`,
+                        `${row.replacement_product_name} (${row.replacement_barcode})`,
+                        row.quantity,
+                        row.replacement_quantity,
+                        row.status,
+                    ]),
+                    styles: { fontSize: 8, cellPadding: 2 },
+                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
+                    alternateRowStyles: { fillColor: [245, 247, 255] },
+                    margin: { left: 14, right: 14 },
+                });
+            }
+
             doc.save(`SVS-${reportMode}-report-${fileDate}.pdf`);
         } catch (err) {
             console.error(err);
             alert("Could not generate PDF report.");
         }
     };
-
     const cardClass =
         "rounded-3xl bg-[#1d1d2e] border border-white/10 shadow-xl p-5 lg:p-6";
 
@@ -434,8 +455,8 @@ export default function Reports() {
                         <button
                             onClick={() => setReportMode("daily")}
                             className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "daily"
-                                    ? "bg-blue-600"
-                                    : "bg-white/10 hover:bg-white/15"
+                                ? "bg-blue-600"
+                                : "bg-white/10 hover:bg-white/15"
                                 }`}
                         >
                             Daily
@@ -444,8 +465,8 @@ export default function Reports() {
                         <button
                             onClick={() => setReportMode("monthly")}
                             className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "monthly"
-                                    ? "bg-blue-600"
-                                    : "bg-white/10 hover:bg-white/15"
+                                ? "bg-blue-600"
+                                : "bg-white/10 hover:bg-white/15"
                                 }`}
                         >
                             Monthly
@@ -490,9 +511,7 @@ export default function Reports() {
                     </div>
                 </div>
 
-                {error ? (
-                    <div className={`${cardClass} mb-6 text-red-300`}>{error}</div>
-                ) : null}
+                {error ? <div className={`${cardClass} mb-6 text-red-300`}>{error}</div> : null}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
                     <div className={cardClass}>
@@ -502,9 +521,12 @@ export default function Reports() {
 
                     <div className={cardClass}>
                         <div className="text-white/50 text-sm">Net Income</div>
-                        <div className="text-3xl font-bold mt-2">₹{money(reportStats.totalIncome)}</div>
+                        <div className="text-3xl font-bold mt-2">
+                            ₹{money(reportStats.totalIncome)}
+                        </div>
                         <div className="mt-2 text-xs text-white/45">
-                            Gross ₹{money(reportStats.grossIncome)} - Returns ₹{money(reportStats.acceptedReturnRefund)}
+                            Gross ₹{money(reportStats.grossIncome)} - Accepted Returns ₹
+                            {money(reportStats.acceptedReturnRefund)}
                         </div>
                     </div>
 
@@ -515,11 +537,13 @@ export default function Reports() {
 
                     <div className={cardClass}>
                         <div className="text-white/50 text-sm">Average Bill</div>
-                        <div className="text-3xl font-bold mt-2">₹{money(reportStats.avgBill)}</div>
+                        <div className="text-3xl font-bold mt-2">
+                            ₹{money(reportStats.avgBill)}
+                        </div>
                     </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4 lg:gap-6 mb-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
                     <div className={cardClass}>
                         <div className="text-white/60 text-sm">Paid Bills</div>
                         <div className="text-2xl font-bold mt-2">{reportStats.paidBills}</div>
@@ -531,8 +555,37 @@ export default function Reports() {
                     </div>
 
                     <div className={cardClass}>
+                        <div className="text-white/60 text-sm">Accepted Returns</div>
+                        <div className="text-2xl font-bold mt-2">{reportStats.acceptedReturnsCount}</div>
+                    </div>
+
+                    <div className={cardClass}>
+                        <div className="text-white/60 text-sm">Replacement Returns</div>
+                        <div className="text-2xl font-bold mt-2">{reportStats.replacementReturnsCount}</div>
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
+                    <div className={cardClass}>
+                        <div className="text-white/60 text-sm">Accepted Return Qty</div>
+                        <div className="text-2xl font-bold mt-2">{reportStats.acceptedReturnQty}</div>
+                    </div>
+
+                    <div className={cardClass}>
+                        <div className="text-white/60 text-sm">Replacement Qty</div>
+                        <div className="text-2xl font-bold mt-2">{reportStats.replacementQty}</div>
+                    </div>
+
+                    <div className={cardClass}>
+                        <div className="text-white/60 text-sm">Replacement Product Qty</div>
+                        <div className="text-2xl font-bold mt-2">{reportStats.replacementProductQty}</div>
+                    </div>
+
+                    <div className={cardClass}>
                         <div className="text-white/60 text-sm">Total Discount</div>
-                        <div className="text-2xl font-bold mt-2">₹{money(reportStats.totalDiscount)}</div>
+                        <div className="text-2xl font-bold mt-2">
+                            ₹{money(reportStats.totalDiscount)}
+                        </div>
                     </div>
                 </div>
 
@@ -540,7 +593,9 @@ export default function Reports() {
                     <div className={cardClass}>
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-2xl font-bold">Top Products</h2>
-                            <span className="text-white/50 text-sm">{reportStats.topProducts.length} items</span>
+                            <span className="text-white/50 text-sm">
+                                {reportStats.topProducts.length} items
+                            </span>
                         </div>
 
                         {reportStats.topProducts.length === 0 ? (
@@ -581,7 +636,9 @@ export default function Reports() {
                     <div className={cardClass}>
                         <div className="flex items-center justify-between mb-4">
                             <h2 className="text-2xl font-bold">Brand Summary</h2>
-                            <span className="text-white/50 text-sm">{reportStats.brandSummary.length} brands</span>
+                            <span className="text-white/50 text-sm">
+                                {reportStats.brandSummary.length} brands
+                            </span>
                         </div>
 
                         {reportStats.brandSummary.length === 0 ? (
@@ -619,9 +676,7 @@ export default function Reports() {
                             <h2 className="text-2xl font-bold">
                                 {reportMode === "monthly" ? "Monthly" : "Daily"} Invoice List
                             </h2>
-                            <p className="text-white/50 text-sm mt-1">
-                                Period: {range.label}
-                            </p>
+                            <p className="text-white/50 text-sm mt-1">Period: {range.label}</p>
                         </div>
 
                         <p className="text-white/50 text-sm">
