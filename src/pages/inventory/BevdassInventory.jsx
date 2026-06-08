@@ -114,7 +114,7 @@ export default function BevdassInventory() {
     return (
         <div className="p-8 text-white min-h-screen bg-[#111827]">
             <div className="flex justify-between items-center mb-8 gap-4 flex-wrap">
-                <h1 className="text-4xl font-bold">Bevdass Inventory</h1>
+                <h1 className="text-4xl font-bold">2DudesBevdass Inventory</h1>
 
                 <div className="flex items-center gap-3">
                     <input
