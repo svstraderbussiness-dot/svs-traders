@@ -4,6 +4,8 @@ import { useTheme } from "../context/ThemeContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+const GST_NO = "36GXBPSS5501Z9";
+
 function money(value) {
     return Number(value || 0).toLocaleString("en-IN", {
         minimumFractionDigits: 2,
@@ -138,6 +140,7 @@ function buildThermalReceiptHtml(invoice) {
     <div class="center">
         <div class="title">${businessName}</div>
         <div>2Dudes Bevdass</div>
+        <div><strong>GSTIN:</strong> ${GST_NO}</div>
         <div>Thank You For Shopping</div>
     </div>
 
@@ -1015,6 +1018,8 @@ export default function Billing() {
 
 Thank you for shopping with ${settings.business_name || "2DudesBevdass (SVS TRADERS)"}
 
+GSTIN: ${GST_NO}
+
 Invoice Details:
 
 Invoice No: ${invoiceCode}
@@ -1728,6 +1733,7 @@ Thank you for your purchase! Please visit again.`;
                     opacity: 0,
                     pointerEvents: "none",
                 }}
-            />        </div>
+            />
+        </div>
     );
 }
