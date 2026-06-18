@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../context/ThemeContext";
 import jsPDF from "jspdf";
@@ -67,6 +67,111 @@ function buildInvoiceCode(prefix = "SVS") {
     return `${prefix}-${datePart}-${randomPart}`;
 }
 
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
+
+function buildThermalReceiptHtml(invoice) {
+    const businessName = escapeHtml(invoice?.businessName || "SVS TRADERS");
+    const customerName = escapeHtml(invoice?.customerName || "Walk-in");
+    const invoiceCode = escapeHtml(invoice?.invoiceCode || "-");
+    const paymentMode = escapeHtml(invoice?.paymentMode || "-");
+    const paymentStatus = escapeHtml(invoice?.paymentStatus || "-");
+    const invoiceDate = escapeHtml(invoice?.invoiceDate || new Date().toLocaleString("en-IN"));
+    const items = Array.isArray(invoice?.items) ? invoice.items : [];
+
+    const itemsHtml = items
+        .map((item, index) => {
+            const qty = Number(item.quantity || 0);
+            const gross = Number(item.quantity || 0) * Number(item.mrp || 0);
+            const lineDiscount = Number(item.discountValue || 0)
+                ? item.discountType === "percent"
+                    ? (gross * Math.min(Math.max(Number(item.discountValue || 0), 0), 100)) / 100
+                    : Math.min(Math.max(Number(item.discountValue || 0), 0), gross)
+                : 0;
+            const net = Math.max(gross - lineDiscount, 0);
+            const discountText =
+                Number(item.discountValue || 0) > 0
+                    ? item.discountType === "percent"
+                        ? `${money(item.discountValue)}% Off`
+                        : `₹${money(item.discountValue)} Off`
+                    : "No Discount";
+
+            return `
+                <div class="item">
+                    <div class="bold">${index + 1}x ${escapeHtml(item.product_name || "Product")}</div>
+                    <div>Qty: ${qty}</div>
+                    <div>MRP: ₹${money(item.mrp)}</div>
+                    <div>Gross: ₹${money(gross)}</div>
+                    <div>Discount: ${escapeHtml(discountText)}</div>
+                    <div>Line Discount: ₹${money(lineDiscount)}</div>
+                    <div>Final: ₹${money(net)}</div>
+                </div>
+            `;
+        })
+        .join("");
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${invoiceCode}</title>
+    <style>
+        @page { size: 80mm auto; margin: 0; }
+        html, body { margin: 0; padding: 0; width: 80mm; background: #fff; color: #000; }
+        body { font-family: monospace; font-size: 11px; line-height: 1.4; padding: 6mm; box-sizing: border-box; }
+        .center { text-align: center; }
+        .title { font-size: 16px; font-weight: 700; }
+        .bold { font-weight: 700; }
+        .line { border-top: 1px dashed #000; margin: 8px 0; }
+        .item { margin-bottom: 8px; }
+        .summary { line-height: 1.5; }
+    </style>
+</head>
+<body>
+    <div class="center">
+        <div class="title">${businessName}</div>
+        <div>2Dudes Bevdass</div>
+        <div>Thank You For Shopping</div>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="summary">
+        <div><span class="bold">Invoice:</span> ${invoiceCode}</div>
+        <div><span class="bold">Date:</span> ${invoiceDate}</div>
+        <div><span class="bold">Customer:</span> ${customerName}</div>
+        <div><span class="bold">Payment:</span> ${paymentMode}</div>
+        <div><span class="bold">Status:</span> ${paymentStatus}</div>
+    </div>
+
+    <div class="line"></div>
+
+    ${itemsHtml}
+
+    <div class="line"></div>
+
+    <div class="summary">
+        <div><span class="bold">Items Total:</span> ₹${money(invoice?.itemsGrossTotal || 0)}</div>
+        <div><span class="bold">Total Discount:</span> ₹${money(invoice?.itemDiscountTotal || 0)}</div>
+        <div><span class="bold">Final Amount Paid:</span> ₹${money(invoice?.finalTotal || 0)}</div>
+    </div>
+
+    <div class="line"></div>
+
+    <div class="center">
+        Thank You 😊<br />Visit Again
+    </div>
+</body>
+</html>`;
+}
+
 export default function Billing() {
     const { settings } = useTheme();
 
@@ -85,9 +190,13 @@ export default function Billing() {
     }, [settings.invoice_prefix]);
 
     const lowStockThreshold = useMemo(() => {
-        const value = Number(settings.low_stock_threshold);
+        const value = Number(settings?.low_stock_threshold);
         return Number.isFinite(value) ? value : 5;
-    }, [settings.low_stock_threshold]);
+    }, [settings?.low_stock_threshold]);
+
+    const autoPrintEnabled = useMemo(() => {
+        return settings?.auto_print_invoice !== false;
+    }, [settings?.auto_print_invoice]);
 
     const [searchQuery, setSearchQuery] = useState("");
     const [searchResults, setSearchResults] = useState([]);
@@ -102,9 +211,6 @@ export default function Billing() {
     const [paymentMode, setPaymentMode] = useState(defaultPaymentMode);
     const [markAsPaid, setMarkAsPaid] = useState(true);
 
-    const [billDiscountType, setBillDiscountType] = useState(defaultDiscountType);
-    const [billDiscountValue, setBillDiscountValue] = useState("");
-
     const [manualInvoiceCode, setManualInvoiceCode] = useState("");
 
     const [saving, setSaving] = useState(false);
@@ -116,6 +222,7 @@ export default function Billing() {
     const [message, setMessage] = useState("");
 
     const [printInvoice, setPrintInvoice] = useState(null);
+    const printFrameRef = useRef(null);
 
     const [liveTime, setLiveTime] = useState(
         new Date().toLocaleTimeString("en-IN", {
@@ -146,10 +253,6 @@ export default function Billing() {
     }, [defaultPaymentMode]);
 
     useEffect(() => {
-        setBillDiscountType(defaultDiscountType);
-    }, [defaultDiscountType]);
-
-    useEffect(() => {
         if (paymentMode === "Credit") {
             setMarkAsPaid(false);
         }
@@ -168,20 +271,29 @@ export default function Billing() {
     }, [settings.auto_invoice]);
 
     useEffect(() => {
-        const handleAfterPrint = () => {
-            setPrintInvoice(null);
-        };
-
-        window.addEventListener("afterprint", handleAfterPrint);
-        return () => window.removeEventListener("afterprint", handleAfterPrint);
-    }, []);
-
-    useEffect(() => {
         if (!printInvoice) return;
+        const frame = printFrameRef.current;
+        if (!frame) return;
+
+        const doc = frame.contentDocument || frame.contentWindow?.document;
+        if (!doc) return;
+
+        doc.open();
+        doc.write(buildThermalReceiptHtml(printInvoice));
+        doc.close();
 
         const timer = setTimeout(() => {
-            window.print();
-        }, 400);
+            try {
+                frame.contentWindow?.focus();
+                frame.contentWindow?.print();
+            } catch (error) {
+                console.error("Print error:", error);
+            }
+
+            setTimeout(() => {
+                setPrintInvoice(null);
+            }, 800);
+        }, 500);
 
         return () => clearTimeout(timer);
     }, [printInvoice]);
@@ -229,20 +341,8 @@ export default function Billing() {
         return cart.reduce((sum, item) => sum + getLineNet(item), 0);
     }, [cart]);
 
-    const billDiscountAmount = useMemo(() => {
-        const value = Number(billDiscountValue || 0);
-        if (!value) return 0;
-
-        if (billDiscountType === "percent") {
-            const percent = Math.min(Math.max(value, 0), 100);
-            return (itemsNetTotal * percent) / 100;
-        }
-
-        return Math.min(Math.max(value, 0), itemsNetTotal);
-    }, [billDiscountType, billDiscountValue, itemsNetTotal]);
-
-    const totalDiscountAmount = itemDiscountTotal + billDiscountAmount;
-    const finalTotal = Math.max(itemsNetTotal - billDiscountAmount, 0);
+    const totalDiscountAmount = itemDiscountTotal;
+    const finalTotal = itemsNetTotal;
 
     const paymentStatus = useMemo(() => {
         if (paymentMode === "Credit") return "Pending";
@@ -276,14 +376,25 @@ export default function Billing() {
         setCustomerName("");
         setCustomerPhone("");
         setCustomerEmail("");
-        setBillDiscountValue("");
         setManualInvoiceCode("");
         setPaymentMode(defaultPaymentMode);
-        setBillDiscountType(defaultDiscountType);
         setMarkAsPaid(true);
         setSuccessInvoice(null);
         setMessage("");
         setPrintInvoice(null);
+    };
+
+    const reprintLastInvoice = () => {
+        if (!lastInvoice) {
+            alert("No invoice available to print.");
+            return;
+        }
+
+        setPrintInvoice({
+            ...lastInvoice,
+            businessName: settings?.business_name || "SVS TRADERS",
+            invoiceDate: lastInvoice.invoiceDate || new Date().toLocaleString("en-IN"),
+        });
     };
 
     const addToCart = (product) => {
@@ -946,10 +1057,11 @@ Thank you for your purchase! Please visit again.`;
                 items: printableItems,
                 itemsGrossTotal,
                 itemDiscountTotal,
-                billDiscountAmount,
                 finalTotal,
                 paymentMode,
                 paymentStatus,
+                invoiceDate: new Date().toLocaleString("en-IN"),
+                businessName: settings?.business_name || "SVS TRADERS",
             });
 
             setSuccessInvoice({
@@ -957,36 +1069,38 @@ Thank you for your purchase! Please visit again.`;
                 finalTotal,
                 itemsGrossTotal,
                 itemDiscountTotal,
-                billDiscountAmount,
                 paymentMode,
                 paymentStatus,
                 customerName: customerName.trim(),
                 phone: normalizePhone(customerPhone),
+                invoiceDate: new Date().toLocaleString("en-IN"),
             });
 
-            setPrintInvoice({
+            const invoicePrintData = {
                 invoiceCode,
                 customerName: customerName.trim(),
                 items: printableItems,
                 itemsGrossTotal,
                 itemDiscountTotal,
-                billDiscountAmount,
                 finalTotal,
                 paymentMode,
                 paymentStatus,
                 invoiceDate: new Date().toLocaleString("en-IN"),
-            });
+                businessName: settings?.business_name || "SVS TRADERS",
+            };
+
+            if (autoPrintEnabled) {
+                setPrintInvoice(invoicePrintData);
+            }
 
             setCart([]);
             setSearchQuery("");
             setSearchResults([]);
-            setBillDiscountValue("");
             setManualInvoiceCode("");
             setCustomerName("");
             setCustomerPhone("");
             setCustomerEmail("");
             setPaymentMode(defaultPaymentMode);
-            setBillDiscountType(defaultDiscountType);
             setMarkAsPaid(true);
 
             await loadTodayInvoices();
@@ -1386,7 +1500,7 @@ Thank you for your purchase! Please visit again.`;
                                     />
                                 ) : null}
 
-                                <div className="grid grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 gap-3">
                                     <select
                                         value={paymentMode}
                                         onChange={(e) => {
@@ -1404,28 +1518,7 @@ Thank you for your purchase! Please visit again.`;
                                         <option value="Card & Cash">Card & Cash</option>
                                         {settings.credit_billing ? <option value="Credit">Credit</option> : null}
                                     </select>
-
-                                    <select
-                                        value={billDiscountType}
-                                        onChange={(e) => setBillDiscountType(e.target.value)}
-                                        className="bg-[#101725] border border-white/10 rounded-2xl px-4 py-3 outline-none text-white"
-                                    >
-                                        <option value="amount">₹ Discount</option>
-                                        <option value="percent">% Discount</option>
-                                    </select>
                                 </div>
-
-                                <input
-                                    type="number"
-                                    value={billDiscountValue}
-                                    onChange={(e) => setBillDiscountValue(e.target.value)}
-                                    placeholder={
-                                        billDiscountType === "amount"
-                                            ? "Bill discount amount"
-                                            : "Bill discount percent"
-                                    }
-                                    className="w-full bg-[#101725] border border-white/10 rounded-2xl px-4 py-3 outline-none text-white placeholder:text-white/40"
-                                />
 
                                 <label className="flex items-center gap-3 text-sm text-white/80 bg-white/5 rounded-2xl px-4 py-3">
                                     <input
@@ -1572,10 +1665,6 @@ Thank you for your purchase! Please visit again.`;
                                     <span className="text-white/60">Item Discounts</span>
                                     <span>- ₹{money(itemDiscountTotal)}</span>
                                 </div>
-                                <div className="flex justify-between">
-                                    <span className="text-white/60">Bill Discount</span>
-                                    <span>- ₹{money(billDiscountAmount)}</span>
-                                </div>
                                 <div className="flex justify-between text-lg font-bold pt-2 border-t border-white/10">
                                     <span>Grand Total</span>
                                     <span>₹{money(finalTotal)}</span>
@@ -1591,11 +1680,11 @@ Thank you for your purchase! Please visit again.`;
                             </button>
 
                             <button
-                                onClick={undoLastInvoice}
-                                disabled={saving || !lastInvoice}
-                                className="w-full mt-3 bg-white/10 hover:bg-white/15 disabled:opacity-50 transition rounded-2xl py-3 font-semibold"
+                                onClick={reprintLastInvoice}
+                                disabled={!lastInvoice}
+                                className="w-full mt-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition rounded-2xl py-3 font-semibold"
                             >
-                                Undo Last Invoice
+                                Print Last Bill
                             </button>
 
                             <button
@@ -1626,71 +1715,19 @@ Thank you for your purchase! Please visit again.`;
                 </div>
             </div>
 
-            {printInvoice ? (
-                <div id="thermal-bill" style={{ position: "absolute", left: "-9999px", top: 0 }}>
-                    <div style={{ textAlign: "center", marginBottom: 8 }}>
-                        <div style={{ fontSize: 18, fontWeight: "bold" }}>SVS TRADERS</div>
-                        <div style={{ fontSize: 12 }}>2Dudes Bevdass</div>
-                        <div style={{ fontSize: 11, marginTop: 2 }}>Thank You For Shopping</div>
-                    </div>
-
-                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
-
-                    <div style={{ fontSize: 11, lineHeight: 1.5 }}>
-                        <div><strong>Invoice:</strong> {printInvoice.invoiceCode}</div>
-                        <div><strong>Date:</strong> {printInvoice.invoiceDate}</div>
-                        <div><strong>Customer:</strong> {printInvoice.customerName || "Walk-in"}</div>
-                    </div>
-
-                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
-
-                    <div style={{ fontSize: 11 }}>
-                        {printInvoice.items.map((item, index) => {
-                            const lineGross = getLineGross(item);
-                            const lineDiscount = getLineDiscountAmount(item);
-                            const lineNet = getLineNet(item);
-
-                            const discountText =
-                                Number(item.discountValue || 0) > 0
-                                    ? item.discountType === "percent"
-                                        ? `${Number(item.discountValue)}% Off`
-                                        : `₹${money(item.discountValue)} Off`
-                                    : "No Discount";
-
-                            return (
-                                <div key={`${item.id}-${index}`} style={{ marginBottom: 8 }}>
-                                    <div style={{ fontWeight: "bold" }}>
-                                        {index + 1}x {item.product_name}
-                                    </div>
-                                    <div>Qty: {item.quantity}</div>
-                                    <div>MRP: ₹{money(item.mrp)}</div>
-                                    <div>Gross: ₹{money(lineGross)}</div>
-                                    <div>Discount: {discountText}</div>
-                                    <div>Line Discount: ₹{money(lineDiscount)}</div>
-                                    <div>Final: ₹{money(lineNet)}</div>
-                                </div>
-                            );
-                        })}
-                    </div>
-
-                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
-
-                    <div style={{ fontSize: 11, lineHeight: 1.5 }}>
-                        <div><strong>Items Total:</strong> ₹{money(printInvoice.itemsGrossTotal)}</div>
-                        <div><strong>Total Discount:</strong> ₹{money(printInvoice.itemDiscountTotal + printInvoice.billDiscountAmount)}</div>
-                        <div><strong>Final Amount Paid:</strong> ₹{money(printInvoice.finalTotal)}</div>
-                        <div><strong>Payment Mode:</strong> {printInvoice.paymentMode}</div>
-                        <div><strong>Status:</strong> {printInvoice.paymentStatus}</div>
-                    </div>
-
-                    <div style={{ borderTop: "1px dashed #000", margin: "8px 0" }} />
-
-                    <div style={{ textAlign: "center", fontSize: 11 }}>
-                        Thank You 😊<br />
-                        Visit Again
-                    </div>
-                </div>
-            ) : null}
-        </div>
+            <iframe
+                ref={printFrameRef}
+                title="thermal-print-frame"
+                style={{
+                    position: "fixed",
+                    width: 0,
+                    height: 0,
+                    border: 0,
+                    right: 0,
+                    bottom: 0,
+                    opacity: 0,
+                    pointerEvents: "none",
+                }}
+            />        </div>
     );
 }

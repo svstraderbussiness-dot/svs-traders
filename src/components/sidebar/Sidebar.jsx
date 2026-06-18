@@ -21,7 +21,7 @@ const navItems = [
     { to: "/billing", label: "Billing", icon: ReceiptText },
     { to: "/returns", label: "Returns", icon: RotateCcw },
     { to: "/jockey-inventory", label: "Jockey Inventory", icon: ShoppingBag },
-    { to: "/bevdass-inventory", label: "2DudesBevdass Inventory", icon: Store },
+    { to: "/bevdass-inventory", label: "2 Dudes Bevdaas Inventory", icon: Store },
     { to: "/svs-inventory", label: "SVS Inventory", icon: Boxes },
     { to: "/upload-stock", label: "Upload Stock", icon: Upload },
     { to: "/reports", label: "Reports", icon: BarChart3 },
