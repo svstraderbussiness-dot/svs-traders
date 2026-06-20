@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
     ArrowRight,
@@ -14,6 +14,55 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import { useTheme } from "../context/ThemeContext";
+
+/* ── Animated counter hook ── */
+function useAnimatedCounter(target, duration = 900) {
+    const [display, setDisplay] = useState(target);
+    const prevRef = useRef(target);
+    const rafRef = useRef(null);
+
+    useEffect(() => {
+        const from = prevRef.current;
+        const to = target;
+        if (from === to) return;
+        prevRef.current = to;
+
+        const startTime = performance.now();
+        const diff = to - from;
+
+        const tick = (now) => {
+            const elapsed = now - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+            // ease-out cubic
+            const eased = 1 - Math.pow(1 - progress, 3);
+            setDisplay(from + diff * eased);
+            if (progress < 1) rafRef.current = requestAnimationFrame(tick);
+        };
+
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafRef.current);
+    }, [target, duration]);
+
+    return display;
+}
+
+/* ── Ripple click helper ── */
+function addRipple(e) {
+    const btn = e.currentTarget;
+    const rect = btn.getBoundingClientRect();
+    const size = Math.max(rect.width, rect.height) * 2;
+    const x = e.clientX - rect.left - size / 2;
+    const y = e.clientY - rect.top - size / 2;
+    const ripple = document.createElement('span');
+    ripple.className = 'ripple-circle';
+    Object.assign(ripple.style, {
+        width: `${size}px`, height: `${size}px`,
+        left: `${x}px`, top: `${y}px`,
+    });
+    btn.appendChild(ripple);
+    ripple.addEventListener('animationend', () => ripple.remove());
+}
 
 function money(value) {
     return Number(value || 0).toLocaleString("en-IN", {
@@ -81,33 +130,39 @@ function isSameLocalMonth(a, b) {
     return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth();
 }
 
-function StatCard({ title, value, hint, icon: Icon, accentColor, tone = "blue" }) {
-    const toneClasses = {
-        blue: "bg-white/5 border-white/10",
-        green: "bg-emerald-500/10 border-emerald-500/20",
-        red: "bg-red-500/10 border-red-500/20",
-        amber: "bg-amber-500/10 border-amber-500/20",
-    };
+const toneConfig = {
+    blue:  { card: "bg-white/[0.05] border-white/10", icon: "bg-blue-500/10", glow: "0 0 20px rgba(37,99,235,0.2)" },
+    green: { card: "bg-emerald-500/10 border-emerald-500/20", icon: "bg-emerald-500/10", glow: "0 0 20px rgba(16,185,129,0.2)" },
+    red:   { card: "bg-red-500/10 border-red-500/20", icon: "bg-red-500/10", glow: "0 0 20px rgba(239,68,68,0.2)" },
+    amber: { card: "bg-amber-500/10 border-amber-500/20", icon: "bg-amber-500/10", glow: "0 0 20px rgba(245,158,11,0.2)" },
+};
+
+function StatCard({ title, value, hint, icon: Icon, accentColor, tone = "blue", stagger = 0 }) {
+    const cfg = toneConfig[tone] || toneConfig.blue;
 
     return (
         <div
-            className={`rounded-3xl border p-5 shadow-xl ${toneClasses[tone]}`}
-            style={tone === "blue" ? { borderColor: "rgba(255,255,255,0.10)" } : undefined}
+            className={`stat-card animate-card-entrance rounded-3xl border p-5 shadow-lg stagger-${stagger} ${cfg.card}`}
         >
             <div className="flex items-start justify-between gap-4">
-                <div>
-                    <div className="text-sm text-white/60">{title}</div>
-                    <div className="mt-2 text-3xl font-bold tracking-tight">{value}</div>
-                    {hint ? <div className="mt-2 text-sm text-white/45">{hint}</div> : null}
+                <div className="min-w-0 flex-1">
+                    <div className="text-[11px] font-semibold uppercase tracking-widest text-white/40">{title}</div>
+                    <div
+                        className="mt-2.5 text-3xl font-bold tracking-tight text-white tabular-nums"
+                        style={{ fontVariantNumeric: "tabular-nums" }}
+                    >
+                        {value}
+                    </div>
+                    {hint ? (
+                        <div className="mt-2 text-[11px] text-white/38 font-medium">{hint}</div>
+                    ) : null}
                 </div>
                 {Icon ? (
                     <div
-                        className="grid h-12 w-12 place-items-center rounded-2xl"
-                        style={{
-                            backgroundColor: accentColor ? `${accentColor}1A` : "rgba(255,255,255,0.08)",
-                        }}
+                        className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${cfg.icon}`}
+                        style={{ boxShadow: cfg.glow }}
                     >
-                        <Icon size={20} style={{ color: accentColor || "#fff" }} />
+                        <Icon size={18} style={{ color: accentColor || "#fff" }} />
                     </div>
                 ) : null}
             </div>
@@ -117,11 +172,14 @@ function StatCard({ title, value, hint, icon: Icon, accentColor, tone = "blue" }
 
 function SectionCard({ title, subtitle, right, children }) {
     return (
-        <section className="rounded-3xl border border-white/10 bg-[#1d1d2e] p-5 shadow-xl lg:p-6">
+        <section
+            className="section-card animate-fade-in-up rounded-3xl border border-white/[0.08] p-5 shadow-xl lg:p-6"
+            style={{ background: "linear-gradient(145deg, #0f1e3a 0%, #0a1428 100%)" }}
+        >
             <div className="mb-5 flex items-start justify-between gap-4">
                 <div>
-                    <h2 className="text-2xl font-bold">{title}</h2>
-                    {subtitle ? <p className="mt-1 text-sm text-white/55">{subtitle}</p> : null}
+                    <h2 className="text-xl font-bold tracking-tight">{title}</h2>
+                    {subtitle ? <p className="mt-1 text-xs text-white/40 font-medium">{subtitle}</p> : null}
                 </div>
                 {right ? <div>{right}</div> : null}
             </div>
@@ -492,15 +550,19 @@ export default function Dashboard() {
                             type="button"
                             onClick={() => loadDashboard()}
                             disabled={loading || refreshing}
-                            className="rounded-2xl bg-white/10 px-5 py-3 font-semibold transition hover:bg-white/15 disabled:opacity-50"
+                            className="btn-ripple rounded-2xl bg-white/10 px-5 py-3 font-semibold hover:bg-white/15"
+                            onClick={(e) => { addRipple(e); loadDashboard(); }}
+                            disabled={loading || refreshing}
+                            style={{ opacity: loading || refreshing ? 0.5 : 1 }}
                         >
-                            {loading || refreshing ? "Refreshing..." : "Refresh"}
+                            <RefreshCw size={15} className={`inline mr-2 ${loading || refreshing ? "animate-spin-smooth" : ""}`} />
+                            {loading || refreshing ? "Refreshing…" : "Refresh"}
                         </button>
                         <button
                             type="button"
-                            onClick={() => navigate("/billing")}
-                            className="rounded-2xl px-5 py-3 font-semibold text-white transition"
-                            style={{ backgroundColor: accentColor }}
+                            onClick={(e) => { addRipple(e); navigate("/billing"); }}
+                            className="btn-ripple rounded-2xl px-5 py-3 font-semibold text-white"
+                            style={{ background: `linear-gradient(135deg, ${accentColor}, ${accentColor}cc)`, boxShadow: `0 6px 20px ${accentColor}50` }}
                         >
                             Create Bill
                         </button>
@@ -521,6 +583,7 @@ export default function Dashboard() {
                         icon={Wallet}
                         accentColor={accentColor}
                         tone="blue"
+                        stagger={1}
                     />
                     <StatCard
                         title="This Month Revenue"
@@ -529,6 +592,7 @@ export default function Dashboard() {
                         icon={TrendingUp}
                         accentColor={accentColor}
                         tone="green"
+                        stagger={2}
                     />
                     <StatCard
                         title="Returns Today"
@@ -537,6 +601,7 @@ export default function Dashboard() {
                         icon={RotateCcw}
                         accentColor={accentColor}
                         tone="amber"
+                        stagger={3}
                     />
                     <StatCard
                         title="Pending Credit Bills"
@@ -545,6 +610,7 @@ export default function Dashboard() {
                         icon={RefreshCw}
                         accentColor={accentColor}
                         tone="red"
+                        stagger={4}
                     />
                     <StatCard
                         title="Inventory Value"
@@ -553,6 +619,7 @@ export default function Dashboard() {
                         icon={Boxes}
                         accentColor={accentColor}
                         tone="blue"
+                        stagger={5}
                     />
                     <StatCard
                         title="Today's Bills"
@@ -561,6 +628,7 @@ export default function Dashboard() {
                         icon={FileText}
                         accentColor={accentColor}
                         tone="green"
+                        stagger={6}
                     />
                 </div>
 
@@ -575,21 +643,22 @@ export default function Dashboard() {
                                 </div>
                             }
                         >
-                            <div className="space-y-4">
+                            <div className="space-y-3.5">
                                 {trendData.map((item) => {
                                     const percent = (item.revenue / maxTrend) * 100;
                                     return (
-                                        <div key={item.key} className="space-y-2">
-                                            <div className="flex items-center justify-between text-sm">
-                                                <span className="text-white/70">{item.label}</span>
-                                                <span className="text-white/50">₹{money(item.revenue)}</span>
+                                        <div key={item.key} className="space-y-1.5">
+                                            <div className="flex items-center justify-between text-xs">
+                                                <span className="text-white/60 font-semibold">{item.label}</span>
+                                                <span className="text-white/50 font-medium">₹{money(item.revenue)}</span>
                                             </div>
-                                            <div className="h-3 overflow-hidden rounded-full bg-white/8">
+                                            <div className="h-2 overflow-hidden rounded-full bg-white/[0.07]">
                                                 <div
-                                                    className="h-full rounded-full transition-all duration-500"
+                                                    className="progress-bar-fill h-full rounded-full"
                                                     style={{
-                                                        width: `${Math.max(percent, item.revenue > 0 ? 8 : 0)}%`,
-                                                        backgroundColor: accentColor,
+                                                        width: `${Math.max(percent, item.revenue > 0 ? 6 : 0)}%`,
+                                                        background: `linear-gradient(90deg, ${accentColor}99, ${accentColor})`,
+                                                        boxShadow: `0 0 8px ${accentColor}66`,
                                                     }}
                                                 />
                                             </div>
@@ -613,22 +682,23 @@ export default function Dashboard() {
                                     No brand sales data found yet.
                                 </div>
                             ) : (
-                                <div className="space-y-5">
+                                <div className="space-y-4">
                                     {brandPerformance.map((item) => (
-                                        <div key={item.brand} className="space-y-2">
-                                            <div className="flex items-center justify-between gap-4 text-sm">
+                                        <div key={item.brand} className="space-y-1.5">
+                                            <div className="flex items-center justify-between gap-4">
                                                 <div>
-                                                    <div className="font-semibold">{item.brand}</div>
-                                                    <div className="text-white/45">{item.qty} items sold</div>
+                                                    <div className="text-sm font-semibold">{item.brand}</div>
+                                                    <div className="text-xs text-white/40 font-medium">{item.qty} items sold</div>
                                                 </div>
-                                                <div className="font-semibold">₹{money(item.revenue)}</div>
+                                                <div className="text-sm font-bold">₹{money(item.revenue)}</div>
                                             </div>
-                                            <div className="h-3 overflow-hidden rounded-full bg-white/8">
+                                            <div className="h-2 overflow-hidden rounded-full bg-white/[0.07]">
                                                 <div
-                                                    className="h-full rounded-full transition-all duration-500"
+                                                    className="h-full rounded-full transition-all duration-700"
                                                     style={{
                                                         width: `${(item.revenue / maxBrandRevenue) * 100}%`,
-                                                        backgroundColor: accentColor,
+                                                        background: `linear-gradient(90deg, ${accentColor}cc, ${accentColor})`,
+                                                        boxShadow: `0 0 6px ${accentColor}55`,
                                                     }}
                                                 />
                                             </div>
@@ -702,24 +772,36 @@ export default function Dashboard() {
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {recentBills.map((inv) => (
-                                                <tr key={inv.id} className="border-b border-white/5">
-                                                    <td className="py-3 pr-4 font-medium">{inv.invoice_code}</td>
-                                                    <td className="py-3 pr-4">
-                                                        <div className="font-medium">{inv.customer_name || "-"}</div>
-                                                        <div className="text-white/45">{inv.phone_number || "-"}</div>
-                                                    </td>
-                                                    <td className="py-3 pr-4">
-                                                        {new Date(inv.created_at).toLocaleTimeString([], {
-                                                            hour: "2-digit",
-                                                            minute: "2-digit",
-                                                        })}
-                                                    </td>
-                                                    <td className="py-3 pr-4">{inv.payment_mode || "-"}</td>
-                                                    <td className="py-3 pr-4">{inv.payment_status || "-"}</td>
-                                                    <td className="py-3 pr-4 font-semibold">₹{money(inv.final_amount)}</td>
-                                                </tr>
-                                            ))}
+                                            {recentBills.map((inv) => {
+                                                const status = String(inv.payment_status || "").toLowerCase();
+                                                const badgeClass = status === "paid"
+                                                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/25"
+                                                    : status === "credit"
+                                                    ? "bg-amber-500/15 text-amber-300 border-amber-500/25"
+                                                    : "bg-red-500/15 text-red-300 border-red-500/25";
+                                                return (
+                                                    <tr key={inv.id} className="table-row-hover border-b border-white/[0.05]">
+                                                        <td className="py-3 pr-4 font-mono text-xs font-semibold text-white/80">{inv.invoice_code}</td>
+                                                        <td className="py-3 pr-4">
+                                                            <div className="text-sm font-medium">{inv.customer_name || "-"}</div>
+                                                            <div className="text-xs text-white/40">{inv.phone_number || "-"}</div>
+                                                        </td>
+                                                        <td className="py-3 pr-4 text-xs text-white/50">
+                                                            {new Date(inv.created_at).toLocaleTimeString([], {
+                                                                hour: "2-digit",
+                                                                minute: "2-digit",
+                                                            })}
+                                                        </td>
+                                                        <td className="py-3 pr-4 text-xs text-white/60">{inv.payment_mode || "-"}</td>
+                                                        <td className="py-3 pr-4">
+                                                            <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeClass}`}>
+                                                                {inv.payment_status || "-"}
+                                                            </span>
+                                                        </td>
+                                                        <td className="py-3 pr-4 text-sm font-bold">₹{money(inv.final_amount)}</td>
+                                                    </tr>
+                                                );
+                                            })}
                                         </tbody>
                                     </table>
                                 </div>
@@ -769,16 +851,19 @@ export default function Dashboard() {
                                             key={action.label}
                                             type="button"
                                             onClick={() => navigate(action.path)}
-                                            className="rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition hover:bg-white/10"
+                                            className="quick-action-card rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4 text-left"
                                         >
                                             <div
-                                                className="grid h-10 w-10 place-items-center rounded-2xl"
-                                                style={{ backgroundColor: `${accentColor}1A` }}
+                                                className="qa-icon grid h-9 w-9 place-items-center rounded-xl"
+                                                style={{
+                                                    backgroundColor: `${accentColor}20`,
+                                                    boxShadow: `0 0 12px ${accentColor}25`,
+                                                }}
                                             >
-                                                <Icon size={18} style={{ color: accentColor }} />
+                                                <Icon size={16} style={{ color: accentColor }} />
                                             </div>
-                                            <div className="mt-3 font-semibold">{action.label}</div>
-                                            <div className="mt-1 text-sm text-white/45">Open page</div>
+                                            <div className="mt-3 text-sm font-bold">{action.label}</div>
+                                            <div className="mt-0.5 text-xs text-white/35 font-medium">Open page →</div>
                                         </button>
                                     );
                                 })}

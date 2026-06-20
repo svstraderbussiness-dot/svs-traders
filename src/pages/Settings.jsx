@@ -57,12 +57,19 @@ export default function Settings() {
     };
 
     const Section = ({ title, subtitle, children }) => (
-        <section className="rounded-3xl bg-[#1d1d2e] border border-white/10 shadow-xl p-5 lg:p-6">
-            <div className="mb-5">
-                <h2 className="text-2xl font-bold">{title}</h2>
-                {subtitle ? <p className="text-white/50 text-sm mt-1">{subtitle}</p> : null}
+        <section
+            className="rounded-3xl border border-white/[0.08] p-5 shadow-xl lg:p-6 relative overflow-hidden"
+            style={{ background: "linear-gradient(145deg, #0f1e3a 0%, #0a1428 100%)" }}
+        >
+            <div
+                className="absolute left-0 top-6 bottom-6 w-[3px] rounded-r-full"
+                style={{ backgroundColor: accentColor, opacity: 0.7 }}
+            />
+            <div className="mb-5 pl-3">
+                <h2 className="text-lg font-bold tracking-tight">{title}</h2>
+                {subtitle ? <p className="text-white/45 text-xs font-medium mt-1">{subtitle}</p> : null}
             </div>
-            {children}
+            <div className="pl-3">{children}</div>
         </section>
     );
 
@@ -70,24 +77,25 @@ export default function Settings() {
         <button
             type="button"
             onClick={onToggle}
-            className={`w-full rounded-2xl border p-4 text-left transition ${checked
-                ? "border-white/20 bg-white/10"
-                : "border-white/10 bg-white/5 hover:bg-white/10"
+            className={`w-full rounded-xl border p-4 text-left transition-all duration-200 ${checked
+                    ? "border-white/15 bg-white/[0.07]"
+                    : "border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.06]"
                 }`}
         >
             <div className="flex items-center justify-between gap-4">
                 <div>
-                    <div className="font-semibold">{label}</div>
-                    {hint ? <div className="mt-1 text-sm text-white/50">{hint}</div> : null}
+                    <div className="text-sm font-semibold">{label}</div>
+                    {hint ? <div className="mt-0.5 text-xs text-white/45 font-medium">{hint}</div> : null}
                 </div>
+                {/* Animated toggle pill */}
                 <div
-                    className={`flex h-8 w-14 items-center rounded-full p-1 transition ${checked ? "justify-end" : "justify-start"
-                        }`}
-                    style={{
-                        backgroundColor: checked ? accentColor : "rgba(255,255,255,0.18)",
-                    }}
+                    className="relative flex h-7 w-12 shrink-0 items-center rounded-full p-1 transition-colors duration-250"
+                    style={{ backgroundColor: checked ? accentColor : "rgba(255,255,255,0.15)" }}
                 >
-                    <div className="h-6 w-6 rounded-full bg-white shadow" />
+                    <div
+                        className="h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-250"
+                        style={{ transform: checked ? "translateX(20px)" : "translateX(0px)" }}
+                    />
                 </div>
             </div>
         </button>
@@ -154,7 +162,7 @@ export default function Settings() {
                     >
                         <div className="grid gap-4">
                             <div>
-                                <label className="mb-2 block text-sm text-white/70">
+                                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                     Business Name
                                 </label>
                                 <input
@@ -162,14 +170,14 @@ export default function Settings() {
                                     onChange={(e) =>
                                         liveUpdate("business_name", e.target.value)
                                     }
-                                    className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                    className="w-full rounded-xl border border-white/[0.10] bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/30 transition-all duration-150"
                                     placeholder="SVS TRADERS"
                                 />
                             </div>
 
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">
+                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                         Owner Name
                                     </label>
                                     <input
@@ -177,12 +185,12 @@ export default function Settings() {
                                         onChange={(e) =>
                                             liveUpdate("owner_name", e.target.value)
                                         }
-                                        className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                        className="w-full rounded-xl border border-white/[0.10] bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/30 transition-all duration-150"
                                         placeholder="KARUN"
                                     />
                                 </div>
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">
+                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                         Phone
                                     </label>
                                     <input
@@ -190,7 +198,7 @@ export default function Settings() {
                                         onChange={(e) =>
                                             liveUpdate("phone", e.target.value)
                                         }
-                                        className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                        className="w-full rounded-xl border border-white/[0.10] bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/30 transition-all duration-150"
                                         placeholder="9705583982"
                                     />
                                 </div>
@@ -199,7 +207,7 @@ export default function Settings() {
 
 
                             <div>
-                                <label className="mb-2 block text-sm text-white/70">
+                                <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                     Email
                                 </label>
                                 <input
@@ -208,7 +216,7 @@ export default function Settings() {
                                     onChange={(e) =>
                                         liveUpdate("email", e.target.value)
                                     }
-                                    className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none placeholder:text-white/40"
+                                    className="w-full rounded-xl border border-white/[0.10] bg-white/[0.05] px-4 py-3 text-sm text-white placeholder:text-white/30 transition-all duration-150"
                                     placeholder="store@example.com"
                                 />
                             </div>
@@ -222,7 +230,7 @@ export default function Settings() {
                         <div className="grid gap-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">
+                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                         Default Payment Mode
                                     </label>
                                     <select
@@ -230,7 +238,7 @@ export default function Settings() {
                                         onChange={(e) =>
                                             liveUpdate("default_payment_mode", e.target.value)
                                         }
-                                        className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
+                                        className="w-full rounded-xl border border-white/[0.10] bg-[#0e1a35] px-4 py-3 text-sm text-white transition-all duration-150"
                                     >
                                         <option value="Cash">Cash</option>
                                         <option value="Card">Card</option>
@@ -240,7 +248,7 @@ export default function Settings() {
                                 </div>
 
                                 <div>
-                                    <label className="mb-2 block text-sm text-white/70">
+                                    <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                         Default Discount Type
                                     </label>
                                     <select
@@ -248,7 +256,7 @@ export default function Settings() {
                                         onChange={(e) =>
                                             liveUpdate("default_discount_type", e.target.value)
                                         }
-                                        className="w-full rounded-2xl border border-white/10 bg-[#101725] px-4 py-3 text-white outline-none"
+                                        className="w-full rounded-xl border border-white/[0.10] bg-[#0e1a35] px-4 py-3 text-sm text-white transition-all duration-150"
                                     >
                                         <option value="₹">₹ Amount</option>
                                         <option value="%">% Percent</option>
@@ -327,44 +335,39 @@ export default function Settings() {
                                 />
                             </div>
 
-                            <div className="grid gap-4 md:grid-cols-2">
-                                <Toggle
-                                    label="Dark Mode"
-                                    checked={Boolean(settings?.dark_mode)}
-                                    onToggle={() => toggleField("dark_mode")}
-                                    hint="Keep the app in dark appearance."
-                                />
-                                <Toggle
-                                    label="Show Dashboard Summary"
-                                    checked={Boolean(settings?.show_dashboard_summary)}
-                                    onToggle={() => toggleField("show_dashboard_summary")}
-                                    hint="Display summary cards on dashboard."
-                                />
-                            </div>
 
                             <div>
-                                <label className="mb-3 block text-sm text-white/70">
+                                <label className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-white/40">
                                     Accent Theme
                                 </label>
-                                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                                    {["Blue", "Green", "Purple", "Orange"].map((theme) => {
-                                        const active = settings?.accent_theme === theme;
+                                <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                                    {[
+                                        { name: "Blue", color: "#2563eb" },
+                                        { name: "Green", color: "#10b981" },
+                                        { name: "Purple", color: "#8b5cf6" },
+                                        { name: "Orange", color: "#f97316" },
+                                    ].map(({ name, color }) => {
+                                        const active = settings?.accent_theme === name;
                                         return (
                                             <button
-                                                key={theme}
+                                                key={name}
                                                 type="button"
-                                                onClick={() => liveUpdate("accent_theme", theme)}
-                                                className={`rounded-2xl border px-4 py-3 font-semibold transition ${active
-                                                    ? "border-white/30 bg-white/10"
-                                                    : "border-white/10 bg-white/5 hover:bg-white/10"
+                                                onClick={() => liveUpdate("accent_theme", name)}
+                                                className={`btn-press flex items-center gap-2.5 rounded-xl border px-3 py-2.5 text-sm font-semibold transition-all ${active
+                                                        ? "border-white/25 bg-white/10"
+                                                        : "border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.08]"
                                                     }`}
                                                 style={
                                                     active
-                                                        ? { boxShadow: `0 0 0 1px ${accentColor} inset` }
+                                                        ? { boxShadow: `0 0 0 1.5px ${color} inset` }
                                                         : undefined
                                                 }
                                             >
-                                                {theme}
+                                                <span
+                                                    className="h-3 w-3 rounded-full shrink-0 ring-2 ring-white/20"
+                                                    style={{ backgroundColor: color }}
+                                                />
+                                                {name}
                                             </button>
                                         );
                                     })}

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { finalizePDF, drawSummaryCards, standardTableOpts } from "../lib/pdfHelper";
+
 
 function pad2(value) {
     return String(value).padStart(2, "0");
@@ -338,26 +340,29 @@ export default function Reports() {
             const fileDate = today.toISOString().slice(0, 10);
             const title = reportMode === "monthly" ? "Monthly Sales Report" : "Daily Sales Report";
 
-            doc.setFont("helvetica", "bold");
-            doc.setFontSize(18);
-            doc.text(`SVS TRADERS - ${title}`, 14, 16);
+            const infoLeft = [
+                `Period: ${range.label}`,
+            ];
+            const infoRight = [
+                `Report Type: ${title}`,
+            ];
 
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(10);
-            doc.text(`Period: ${range.label}`, 14, 23);
-            doc.text(`Generated At: ${today.toLocaleString()}`, 14, 29);
-            doc.text(`Total Bills: ${reportStats.totalBills}`, 14, 35);
-            doc.text(`Total Items Sold: ${reportStats.totalItems}`, 14, 41);
-            doc.text(`Accepted Return Qty: ${reportStats.acceptedReturnQty}`, 14, 47);
-            doc.text(`Replacement Qty: ${reportStats.replacementQty}`, 14, 53);
-            doc.text(`Accepted Return Refund: ₹${money(reportStats.acceptedReturnRefund)}`, 14, 59);
-            doc.text(`Paid Bills: ${reportStats.paidBills}`, 14, 65);
-            doc.text(`Pending Bills: ${reportStats.pendingBills}`, 14, 71);
-            doc.text(`Total Discount: ₹${money(reportStats.totalDiscount)}`, 14, 77);
-            doc.text(`Net Income: ₹${money(reportStats.totalIncome)}`, 14, 83);
+            const summaryCards = [
+                { label: "Total Bills", value: reportStats.totalBills },
+                { label: "Net Income", value: `₹${money(reportStats.totalIncome)}` },
+                { label: "Total Items Sold", value: reportStats.totalItems },
+                { label: "Average Bill", value: `₹${money(reportStats.avgBill)}` },
+                { label: "Paid Bills", value: reportStats.paidBills },
+                { label: "Pending Bills", value: reportStats.pendingBills },
+                { label: "Accepted Returns", value: reportStats.acceptedReturnsCount },
+                { label: "Replacement Returns", value: reportStats.replacementReturnsCount },
+            ];
+
+            const cardsEndY = drawSummaryCards(doc, summaryCards, 48);
 
             autoTable(doc, {
-                startY: 90,
+                ...standardTableOpts,
+                startY: cardsEndY + 4,
                 head: [["Invoice", "Time", "Customer ID", "Items", "Payment", "Status", "Total"]],
                 body: reportStats.recentInvoices.map((inv) => [
                     inv.invoice_code || "-",
@@ -368,15 +373,21 @@ export default function Reports() {
                     inv.payment_status || "-",
                     `₹${money(inv.final_amount)}`,
                 ]),
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Invoice
+                    1: { halign: "left" }, // Time
+                    2: { halign: "center" }, // Customer ID
+                    3: { halign: "right" }, // Items
+                    4: { halign: "left" }, // Payment
+                    5: { halign: "center" }, // Status
+                    6: { halign: "right" }, // Total
+                }
             });
 
-            let afterY = doc.lastAutoTable.finalY + 10;
+            let afterY = doc.lastAutoTable.finalY + 8;
 
             autoTable(doc, {
+                ...standardTableOpts,
                 startY: afterY,
                 head: [["Brand", "Qty Sold", "Amount"]],
                 body: reportStats.brandSummary.map((row) => [
@@ -384,15 +395,17 @@ export default function Reports() {
                     row.qty,
                     `₹${money(row.amount)}`,
                 ]),
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Brand
+                    1: { halign: "right" }, // Qty Sold
+                    2: { halign: "right" }, // Amount
+                }
             });
 
-            afterY = doc.lastAutoTable.finalY + 10;
+            afterY = doc.lastAutoTable.finalY + 8;
 
             autoTable(doc, {
+                ...standardTableOpts,
                 startY: afterY,
                 head: [["Barcode", "Product", "Brand", "Qty Sold", "Amount"]],
                 body: reportStats.topProducts.map((item) => [
@@ -402,15 +415,19 @@ export default function Reports() {
                     item.qty,
                     `₹${money(item.amount)}`,
                 ]),
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "center" }, // Barcode
+                    1: { halign: "left" }, // Product
+                    2: { halign: "left" }, // Brand
+                    3: { halign: "right" }, // Qty Sold
+                    4: { halign: "right" }, // Amount
+                }
             });
 
             if (reportStats.replacementSummary.length > 0) {
-                afterY = doc.lastAutoTable.finalY + 10;
+                afterY = doc.lastAutoTable.finalY + 8;
                 autoTable(doc, {
+                    ...standardTableOpts,
                     startY: afterY,
                     head: [["Invoice", "Returned Item", "Replacement Item", "Qty", "Replacement Qty", "Status"]],
                     body: reportStats.replacementSummary.map((row) => [
@@ -421,12 +438,18 @@ export default function Reports() {
                         row.replacement_quantity,
                         row.status,
                     ]),
-                    styles: { fontSize: 8, cellPadding: 2 },
-                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                    alternateRowStyles: { fillColor: [245, 247, 255] },
-                    margin: { left: 14, right: 14 },
+                    columnStyles: {
+                        0: { halign: "left" }, // Invoice
+                        1: { halign: "left" }, // Returned Item
+                        2: { halign: "left" }, // Replacement Item
+                        3: { halign: "right" }, // Qty
+                        4: { halign: "right" }, // Replacement Qty
+                        5: { halign: "center" }, // Status
+                    }
                 });
             }
+
+            finalizePDF(doc, title, infoLeft, infoRight);
 
             doc.save(`SVS-${reportMode}-report-${fileDate}.pdf`);
         } catch (err) {
@@ -435,50 +458,71 @@ export default function Reports() {
         }
     };
     const cardClass =
-        "rounded-3xl bg-[#1d1d2e] border border-white/10 shadow-xl p-5 lg:p-6";
+        "stat-card animate-card-entrance rounded-3xl border border-white/[0.08] shadow-xl p-5 lg:p-6";
+    const cardBg = "linear-gradient(145deg, #0f1e3a 0%, #0a1428 100%)";
+
+    /* Ripple helper */
+    const addRipple = (e) => {
+        const btn = e.currentTarget;
+        const rect = btn.getBoundingClientRect();
+        const size = Math.max(rect.width, rect.height) * 2;
+        const x = e.clientX - rect.left - size / 2;
+        const y = e.clientY - rect.top - size / 2;
+        const r = document.createElement('span');
+        r.className = 'ripple-circle';
+        Object.assign(r.style, { width: `${size}px`, height: `${size}px`, left: `${x}px`, top: `${y}px` });
+        btn.appendChild(r);
+        r.addEventListener('animationend', () => r.remove());
+    };
 
     const currentMonthLabel =
         monthOptions.find((m) => m.value === selectedMonth)?.label || "Select Month";
 
     return (
-        <div className="min-h-screen bg-[#061b4d] text-white p-4 lg:p-6">
+        <div
+            className="min-h-screen text-white p-4 lg:p-6 animate-fade-in-up"
+            style={{ background: "linear-gradient(135deg, #061b4d 0%, #071533 100%)" }}
+        >
             <div className="max-w-[1600px] mx-auto">
-                <div className="mb-6 lg:mb-8">
-                    <h1 className="text-4xl lg:text-5xl font-bold">Reports</h1>
-                    <p className="text-white/70 mt-2">
+                <div className="mb-7">
+                    <h1 className="text-3xl font-bold tracking-tight text-white">Reports</h1>
+                    <p className="text-white/40 mt-1 text-sm font-medium">
                         Daily and monthly sales, brand summary, top products, and PDF export.
                     </p>
                 </div>
 
                 <div className="flex flex-col gap-4 mb-6">
-                    <div className="flex flex-wrap gap-3">
+                    <div className="flex flex-wrap gap-2.5">
                         <button
                             onClick={() => setReportMode("daily")}
-                            className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "daily"
-                                ? "bg-blue-600"
-                                : "bg-white/10 hover:bg-white/15"
-                                }`}
+                            className={`btn-ripple px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                                reportMode === "daily"
+                                    ? "bg-blue-600 shadow-[0_6px_18px_rgba(37,99,235,0.4)]"
+                                    : "bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.08]"
+                            }`}
+                            onClick={(e) => { addRipple(e); setReportMode("daily"); }}
                         >
                             Daily
                         </button>
 
                         <button
-                            onClick={() => setReportMode("monthly")}
-                            className={`px-5 py-3 rounded-2xl font-semibold transition ${reportMode === "monthly"
-                                ? "bg-blue-600"
-                                : "bg-white/10 hover:bg-white/15"
-                                }`}
+                            className={`btn-ripple px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
+                                reportMode === "monthly"
+                                    ? "bg-blue-600 shadow-[0_6px_18px_rgba(37,99,235,0.4)]"
+                                    : "bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.08]"
+                            }`}
+                            onClick={(e) => { addRipple(e); setReportMode("monthly"); }}
                         >
                             Monthly
                         </button>
 
                         {reportMode === "monthly" ? (
                             <div className="flex items-center gap-3 flex-wrap">
-                                <div className="text-white/60 text-sm">Select Month</div>
+                                <div className="text-white/40 text-xs font-semibold uppercase tracking-wider">Select Month</div>
                                 <select
                                     value={selectedMonth}
                                     onChange={(e) => setSelectedMonth(e.target.value)}
-                                    className="bg-[#111827] border border-white/10 rounded-2xl px-4 py-3 text-white outline-none"
+                                    className="bg-white/[0.06] border border-white/[0.10] rounded-xl px-4 py-2.5 text-white text-sm"
                                 >
                                     {monthOptions.map((month) => (
                                         <option key={month.value} value={month.value}>
@@ -486,25 +530,29 @@ export default function Reports() {
                                         </option>
                                     ))}
                                 </select>
-                                <div className="text-white/40 text-sm">
+                                <div className="text-white/35 text-xs font-medium">
                                     Showing: {currentMonthLabel}
                                 </div>
                             </div>
                         ) : null}
                     </div>
 
-                    <div className="flex gap-3 ml-0 lg:ml-auto justify-start lg:justify-end">
+                    <div className="flex gap-2.5 ml-0 lg:ml-auto justify-start lg:justify-end">
                         <button
-                            onClick={loadReportData}
+                            onClick={(e) => { addRipple(e); loadReportData(); }}
                             disabled={loading}
-                            className="px-5 py-3 rounded-2xl font-semibold bg-white/10 hover:bg-white/15 disabled:opacity-50 transition"
+                            className="btn-ripple flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-white/[0.07] hover:bg-white/[0.12] border border-white/[0.08] disabled:opacity-50"
                         >
-                            {loading ? "Loading..." : "Refresh"}
+                            {loading ? (
+                                <span className="h-3.5 w-3.5 rounded-full border-2 border-white/30 border-t-white animate-spin-smooth" />
+                            ) : null}
+                            {loading ? "Loading…" : "Refresh"}
                         </button>
 
                         <button
-                            onClick={downloadPDF}
-                            className="px-5 py-3 rounded-2xl font-semibold bg-emerald-600 hover:bg-emerald-700 transition"
+                            onClick={(e) => { addRipple(e); downloadPDF(); }}
+                            className="btn-ripple flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold"
+                            style={{ background: "linear-gradient(135deg, #10b981, #059669)", boxShadow: "0 6px 18px rgba(16,185,129,0.4)" }}
                         >
                             Download PDF
                         </button>
@@ -514,55 +562,38 @@ export default function Reports() {
                 {error ? <div className={`${cardClass} mb-6 text-red-300`}>{error}</div> : null}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Total Bills</div>
-                        <div className="text-3xl font-bold mt-2">{reportStats.totalBills}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Net Income</div>
-                        <div className="text-3xl font-bold mt-2">
-                            ₹{money(reportStats.totalIncome)}
+                    {[
+                        { label: "Total Bills", value: reportStats.totalBills, sub: null, stagger: 1 },
+                        { label: "Net Income", value: `₹${money(reportStats.totalIncome)}`, sub: `Gross ₹${money(reportStats.grossIncome)} − Returns ₹${money(reportStats.acceptedReturnRefund)}`, stagger: 2 },
+                        { label: "Total Items Sold", value: reportStats.totalItems, sub: null, stagger: 3 },
+                        { label: "Average Bill", value: `₹${money(reportStats.avgBill)}`, sub: null, stagger: 4 },
+                    ].map(({ label, value, sub, stagger }) => (
+                        <div
+                            key={label}
+                            className={`stat-card animate-card-entrance stagger-${stagger} rounded-3xl border border-white/[0.08] p-5 shadow-lg bg-white/[0.04]`}
+                        >
+                            <div className="text-[11px] font-semibold uppercase tracking-widest text-white/40">{label}</div>
+                            <div className="mt-2.5 text-3xl font-bold tracking-tight text-white tabular-nums">{value}</div>
+                            {sub ? <div className="mt-2 text-[11px] text-white/35 font-medium">{sub}</div> : null}
                         </div>
-                        <div className="mt-2 text-xs text-white/45">
-                            Gross ₹{money(reportStats.grossIncome)} - Accepted Returns ₹
-                            {money(reportStats.acceptedReturnRefund)}
-                        </div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Total Items Sold</div>
-                        <div className="text-3xl font-bold mt-2">{reportStats.totalItems}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/50 text-sm">Average Bill</div>
-                        <div className="text-3xl font-bold mt-2">
-                            ₹{money(reportStats.avgBill)}
-                        </div>
-                    </div>
+                    ))}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
-                    <div className={cardClass}>
-                        <div className="text-white/60 text-sm">Paid Bills</div>
-                        <div className="text-2xl font-bold mt-2">{reportStats.paidBills}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/60 text-sm">Pending Bills</div>
-                        <div className="text-2xl font-bold mt-2">{reportStats.pendingBills}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/60 text-sm">Accepted Returns</div>
-                        <div className="text-2xl font-bold mt-2">{reportStats.acceptedReturnsCount}</div>
-                    </div>
-
-                    <div className={cardClass}>
-                        <div className="text-white/60 text-sm">Replacement Returns</div>
-                        <div className="text-2xl font-bold mt-2">{reportStats.replacementReturnsCount}</div>
-                    </div>
+                    {[
+                        { label: "Paid Bills", value: reportStats.paidBills, color: "emerald" },
+                        { label: "Pending Bills", value: reportStats.pendingBills, color: "amber" },
+                        { label: "Accepted Returns", value: reportStats.acceptedReturnsCount, color: "blue" },
+                        { label: "Replacement Returns", value: reportStats.replacementReturnsCount, color: "red" },
+                    ].map(({ label, value, color }, i) => (
+                        <div
+                            key={label}
+                            className={`stat-card animate-card-entrance stagger-${i + 1} rounded-3xl border border-white/[0.08] p-5 bg-white/[0.03]`}
+                        >
+                            <div className="text-[11px] font-semibold uppercase tracking-widest text-white/40">{label}</div>
+                            <div className={`mt-2.5 text-2xl font-bold text-${color}-300`}>{value}</div>
+                        </div>
+                    ))}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 lg:gap-6 mb-6">
@@ -616,16 +647,15 @@ export default function Reports() {
                                     </thead>
                                     <tbody>
                                         {reportStats.topProducts.slice(0, 10).map((item) => (
-                                            <tr
-                                                key={`${item.barcode}-${item.product_name}`}
-                                                className="border-b border-white/5"
-                                            >
-                                                <td className="py-3 pr-4">{item.barcode}</td>
-                                                <td className="py-3 pr-4">{item.product_name}</td>
-                                                <td className="py-3 pr-4">{item.brand}</td>
-                                                <td className="py-3 pr-4">{item.qty}</td>
-                                                <td className="py-3 pr-4">₹{money(item.amount)}</td>
-                                            </tr>
+                <tr key={`${item.barcode}-${item.product_name}`} className="table-row-hover border-b border-white/[0.05]">
+                                                    <td className="py-3 pr-4 font-mono text-xs text-white/70">{item.barcode}</td>
+                                                    <td className="py-3 pr-4 text-sm font-semibold">{item.product_name}</td>
+                                                    <td className="py-3 pr-4 text-white/60 text-sm">{item.brand}</td>
+                                                    <td className="py-3 pr-4">
+                                                        <span className="inline-flex items-center justify-center rounded-lg bg-blue-500/15 text-blue-300 px-2 py-0.5 text-xs font-bold">{item.qty}</span>
+                                                    </td>
+                                                    <td className="py-3 pr-4 font-semibold text-white/80">₹{money(item.amount)}</td>
+                                                </tr>
                                         ))}
                                     </tbody>
                                 </table>
@@ -657,10 +687,12 @@ export default function Reports() {
                                     </thead>
                                     <tbody>
                                         {reportStats.brandSummary.map((row) => (
-                                            <tr key={row.brand} className="border-b border-white/5">
-                                                <td className="py-3 pr-4">{row.brand}</td>
-                                                <td className="py-3 pr-4">{row.qty}</td>
-                                                <td className="py-3 pr-4">₹{money(row.amount)}</td>
+                                            <tr key={row.brand} className="table-row-hover border-b border-white/[0.05]">
+                                                <td className="py-3 pr-4 font-semibold text-sm">{row.brand}</td>
+                                                <td className="py-3 pr-4">
+                                                    <span className="inline-flex items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-300 px-2 py-0.5 text-xs font-bold">{row.qty}</span>
+                                                </td>
+                                                <td className="py-3 pr-4 font-semibold text-white/80">₹{money(row.amount)}</td>
                                             </tr>
                                         ))}
                                     </tbody>
@@ -703,21 +735,31 @@ export default function Reports() {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {reportStats.recentInvoices.map((inv) => (
-                                        <tr key={inv.id} className="border-b border-white/5">
-                                            <td className="py-3 pr-4">{inv.invoice_code}</td>
-                                            <td className="py-3 pr-4">
-                                                {inv.created_at
-                                                    ? new Date(inv.created_at).toLocaleString()
-                                                    : "-"}
+                                    {reportStats.recentInvoices.map((inv) => {
+                                        const status = String(inv.payment_status || "").toLowerCase();
+                                        const badgeCls = status === "paid"
+                                            ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/25"
+                                            : status === "credit"
+                                            ? "bg-amber-500/15 text-amber-300 border-amber-500/25"
+                                            : "bg-red-500/15 text-red-300 border-red-500/25";
+                                        return (
+                                        <tr key={inv.id} className="table-row-hover border-b border-white/[0.05]">
+                                            <td className="py-3 pr-4 font-mono text-xs text-white/80">{inv.invoice_code}</td>
+                                            <td className="py-3 pr-4 text-xs text-white/55">
+                                                {inv.created_at ? new Date(inv.created_at).toLocaleString() : "-"}
                                             </td>
-                                            <td className="py-3 pr-4">{inv.customer_id || "-"}</td>
-                                            <td className="py-3 pr-4">{inv.total_items || 0}</td>
-                                            <td className="py-3 pr-4">{inv.payment_mode || "-"}</td>
-                                            <td className="py-3 pr-4">{inv.payment_status || "-"}</td>
-                                            <td className="py-3 pr-4">₹{money(inv.final_amount)}</td>
+                                            <td className="py-3 pr-4 text-xs text-white/60">{inv.customer_id || "-"}</td>
+                                            <td className="py-3 pr-4 text-sm">{inv.total_items || 0}</td>
+                                            <td className="py-3 pr-4 text-xs text-white/60">{inv.payment_mode || "-"}</td>
+                                            <td className="py-3 pr-4">
+                                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${badgeCls}`}>
+                                                    {inv.payment_status || "-"}
+                                                </span>
+                                            </td>
+                                            <td className="py-3 pr-4 font-bold text-sm">₹{money(inv.final_amount)}</td>
                                         </tr>
-                                    ))}
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                         </div>
@@ -729,15 +771,15 @@ export default function Reports() {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                         {Object.entries(reportStats.paymentCounts).length === 0 ? (
-                            <div className="text-white/50 bg-white/5 rounded-2xl p-4">
+                            <div className="text-white/40 bg-white/[0.04] rounded-xl p-4 text-sm font-medium">
                                 No payment data for this period.
                             </div>
                         ) : (
                             Object.entries(reportStats.paymentCounts).map(([mode, count]) => (
-                                <div key={mode} className="rounded-2xl bg-white/5 p-4 border border-white/5">
-                                    <div className="text-white/50 text-sm">{mode}</div>
-                                    <div className="text-2xl font-bold mt-1">{count} bills</div>
-                                    <div className="text-white/70 mt-1">
+                                <div key={mode} className="quick-action-card rounded-2xl border border-white/[0.08] bg-white/[0.04] p-4">
+                                    <div className="text-[11px] font-semibold uppercase tracking-widest text-white/40">{mode}</div>
+                                    <div className="text-2xl font-bold mt-1.5 text-white">{count} bills</div>
+                                    <div className="text-sm text-white/60 mt-1 font-medium">
                                         ₹{money(reportStats.paymentAmount[mode] || 0)}
                                     </div>
                                 </div>

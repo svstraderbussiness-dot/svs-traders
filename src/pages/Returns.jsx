@@ -3,6 +3,8 @@ import { supabase } from "../lib/supabase";
 import { useTheme } from "../context/ThemeContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { finalizePDF, standardTableOpts } from "../lib/pdfHelper";
+
 
 const RETURN_WINDOW_DAYS = 7;
 
@@ -910,21 +912,16 @@ Please contact the store if you need help.`;
         try {
             const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
 
-            doc.setFont("helvetica", "bold");
-            doc.setFontSize(18);
-            doc.text("SVS TRADERS - Return History", 14, 16);
-
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(10);
-            doc.text(
-                `Generated: ${new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" })}`,
-                14,
-                23
-            );
-            doc.text(`Records: ${returnHistory.length}`, 14, 29);
+            const infoLeft = [
+                `Records: ${returnHistory.length}`,
+            ];
+            const infoRight = [
+                `Report Type: Return History`,
+            ];
 
             autoTable(doc, {
-                startY: 36,
+                ...standardTableOpts,
+                startY: 48,
                 head: [
                     [
                         "Date",
@@ -956,11 +953,21 @@ Please contact the store if you need help.`;
                                 : "-",
                         ])
                         : [["-", "-", "-", "-", "-", 0, "₹0.00", "-", "-", "-"]],
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Date
+                    1: { halign: "left" }, // Invoice
+                    2: { halign: "left" }, // Customer
+                    3: { halign: "left" }, // Product
+                    4: { halign: "center" }, // Barcode
+                    5: { halign: "right" }, // Qty
+                    6: { halign: "right" }, // Refund
+                    7: { halign: "center" }, // Status
+                    8: { halign: "left" }, // Reason
+                    9: { halign: "left" }, // Replacement
+                }
             });
+
+            finalizePDF(doc, "Return History Report", infoLeft, infoRight);
 
             doc.save(`SVS_Return_History_${new Date().toISOString().slice(0, 10)}.pdf`);
         } catch (err) {

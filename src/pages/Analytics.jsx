@@ -17,6 +17,8 @@ import {
 } from "recharts";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { finalizePDF, drawSummaryCards, standardTableOpts } from "../lib/pdfHelper";
+
 
 const PIE_COLORS = [
     "#3b82f6",
@@ -602,25 +604,28 @@ export default function Analytics() {
     const downloadAnalyticsPDF = () => {
         try {
             const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-            const now = new Date();
 
-            doc.setFont("helvetica", "bold");
-            doc.setFontSize(18);
-            doc.text("SVS TRADERS - Analytics Report", 14, 16);
+            const infoLeft = [
+                `Chart Range: ${chartDataKeyLabel}`,
+            ];
+            const infoRight = [
+                `Report Type: Analytics Summary`,
+            ];
 
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(10);
-            doc.text(`Generated: ${now.toLocaleString()}`, 14, 23);
-            doc.text(`Chart Range: ${chartDataKeyLabel}`, 14, 29);
-            doc.text(`Total Bills: ${totals.totalBills}`, 14, 35);
-            doc.text(`Total Income: ₹${money(totals.totalIncome)}`, 14, 41);
-            doc.text(`Inventory Value: ₹${money(totals.inventoryValue)}`, 14, 47);
-            doc.text(`Accepted Returns: ${totals.totalAcceptedReturns}`, 14, 53);
-            doc.text(`Replacement Returns: ${totals.totalReplacementReturns}`, 14, 59);
-            doc.text(`Return Refund: ₹${money(totals.totalReturnRefund)}`, 14, 65);
+            const summaryCards = [
+                { label: "Total Bills", value: totals.totalBills },
+                { label: "Total Income", value: `₹${money(totals.totalIncome)}` },
+                { label: "Inventory Value", value: `₹${money(totals.inventoryValue)}` },
+                { label: "Accepted Returns", value: totals.totalAcceptedReturns },
+                { label: "Replacement Returns", value: totals.totalReplacementReturns },
+                { label: "Return Refund", value: `₹${money(totals.totalReturnRefund)}` },
+            ];
+
+            const cardsEndY = drawSummaryCards(doc, summaryCards, 48);
 
             autoTable(doc, {
-                startY: 72,
+                ...standardTableOpts,
+                startY: cardsEndY + 4,
                 head: [["Date", "Bills", "Revenue"]],
                 body:
                     revenueTrend.length > 0
@@ -630,13 +635,15 @@ export default function Analytics() {
                             `₹${money(row.revenue)}`,
                         ])
                         : [["-", 0, "₹0.00"]],
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Date
+                    1: { halign: "right" }, // Bills
+                    2: { halign: "right" }, // Revenue
+                }
             });
 
             autoTable(doc, {
+                ...standardTableOpts,
                 startY: doc.lastAutoTable.finalY + 8,
                 head: [["Brand", "Qty Sold", "Revenue"]],
                 body:
@@ -647,13 +654,15 @@ export default function Analytics() {
                             `₹${money(row.revenue)}`,
                         ])
                         : [["-", 0, "₹0.00"]],
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Brand
+                    1: { halign: "right" }, // Qty Sold
+                    2: { halign: "right" }, // Revenue
+                }
             });
 
             autoTable(doc, {
+                ...standardTableOpts,
                 startY: doc.lastAutoTable.finalY + 8,
                 head: [["Mode", "Bills", "Revenue"]],
                 body:
@@ -664,14 +673,16 @@ export default function Analytics() {
                             `₹${money(row.revenue)}`,
                         ])
                         : [["-", 0, "₹0.00"]],
-                styles: { fontSize: 8, cellPadding: 2 },
-                headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                alternateRowStyles: { fillColor: [245, 247, 255] },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Mode
+                    1: { halign: "right" }, // Bills
+                    2: { halign: "right" }, // Revenue
+                }
             });
 
             if (returnAnalytics.topAcceptedReturned.length > 0) {
                 autoTable(doc, {
+                    ...standardTableOpts,
                     startY: doc.lastAutoTable.finalY + 8,
                     head: [["Invoice", "Barcode", "Product", "Qty", "Refund", "Status"]],
                     body: returnAnalytics.topAcceptedReturned.map((row) => [
@@ -682,15 +693,20 @@ export default function Analytics() {
                         `₹${money(row.refund_amount || 0)}`,
                         row.status || "-",
                     ]),
-                    styles: { fontSize: 8, cellPadding: 2 },
-                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                    alternateRowStyles: { fillColor: [245, 247, 255] },
-                    margin: { left: 14, right: 14 },
+                    columnStyles: {
+                        0: { halign: "left" }, // Invoice
+                        1: { halign: "center" }, // Barcode
+                        2: { halign: "left" }, // Product
+                        3: { halign: "right" }, // Qty
+                        4: { halign: "right" }, // Refund
+                        5: { halign: "center" }, // Status
+                    }
                 });
             }
 
             if (returnAnalytics.topReplacementReturned.length > 0) {
                 autoTable(doc, {
+                    ...standardTableOpts,
                     startY: doc.lastAutoTable.finalY + 8,
                     head: [["Invoice", "Returned Item", "Replacement Item", "Returned Qty", "Replacement Qty"]],
                     body: returnAnalytics.topReplacementReturned.map((row) => [
@@ -700,12 +716,17 @@ export default function Analytics() {
                         row.quantity || 0,
                         row.replacement_quantity || 0,
                     ]),
-                    styles: { fontSize: 8, cellPadding: 2 },
-                    headStyles: { fillColor: [10, 32, 83], textColor: [255, 255, 255] },
-                    alternateRowStyles: { fillColor: [245, 247, 255] },
-                    margin: { left: 14, right: 14 },
+                    columnStyles: {
+                        0: { halign: "left" }, // Invoice
+                        1: { halign: "left" }, // Returned Item
+                        2: { halign: "left" }, // Replacement Item
+                        3: { halign: "right" }, // Returned Qty
+                        4: { halign: "right" }, // Replacement Qty
+                    }
                 });
             }
+
+            finalizePDF(doc, "Analytics Report", infoLeft, infoRight);
 
             doc.save(`SVS_Analytics_${new Date().toISOString().slice(0, 10)}.pdf`);
         } catch (err) {

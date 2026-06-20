@@ -3,6 +3,8 @@ import { supabase } from "../lib/supabase";
 import { useTheme } from "../context/ThemeContext";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { finalizePDF, drawSummaryCards, standardTableOpts } from "../lib/pdfHelper";
+
 
 const GST_NO = "36GXBPSS5501Z9";
 
@@ -712,22 +714,27 @@ export default function Billing() {
             const todayText = new Date().toLocaleDateString();
             const fileDate = new Date().toISOString().slice(0, 10);
 
-            doc.setFont("helvetica", "bold");
-            doc.setFontSize(18);
-            doc.text("SVS TRADERS - Daily Sales Report", 14, 16);
+            const infoLeft = [
+                `Date: ${todayText}`,
+            ];
+            const infoRight = [
+                `Report Type: Daily Sales`,
+            ];
 
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(10);
-            doc.text(`Date: ${todayText}`, 14, 23);
-            doc.text(`Total Bills: ${totalBills}`, 14, 29);
-            doc.text(`Total Items Sold: ${totalItemsSold}`, 14, 35);
-            doc.text(`Total Discount: ₹${money(totalDiscount)}`, 14, 41);
-            doc.text(`Gross Income: ₹${money(totalGrossIncome)}`, 14, 47);
-            doc.text(`Returned Today: ₹${money(returnedRefundTotal)}`, 14, 53);
-            doc.text(`Net Income: ₹${money(totalIncome)}`, 14, 59);
+            const summaryCards = [
+                { label: "Total Bills", value: totalBills },
+                { label: "Items Sold", value: totalItemsSold },
+                { label: "Total Discount", value: `₹${money(totalDiscount)}` },
+                { label: "Gross Income", value: `₹${money(totalGrossIncome)}` },
+                { label: "Returned Today", value: `₹${money(returnedRefundTotal)}` },
+                { label: "Net Income", value: `₹${money(totalIncome)}` },
+            ];
+
+            const cardsEndY = drawSummaryCards(doc, summaryCards, 48);
 
             autoTable(doc, {
-                startY: 67,
+                ...standardTableOpts,
+                startY: cardsEndY + 4,
                 head: [["Invoice", "Time", "Items", "Payment", "Status", "Total"]],
                 body: invoiceList.map((inv) => [
                     inv.invoice_code || "-",
@@ -737,27 +744,25 @@ export default function Billing() {
                     inv.isReturnedToday ? "Returned" : inv.payment_status || "-",
                     `₹${money(inv.final_amount)}`,
                 ]),
-                styles: {
-                    fontSize: 8,
-                    cellPadding: 2,
-                },
-                headStyles: {
-                    fillColor: [10, 32, 83],
-                    textColor: [255, 255, 255],
-                },
-                alternateRowStyles: {
-                    fillColor: [245, 247, 255],
-                },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "left" }, // Invoice
+                    1: { halign: "left" }, // Time
+                    2: { halign: "right" }, // Items
+                    3: { halign: "left" }, // Payment
+                    4: { halign: "center" }, // Status
+                    5: { halign: "right" }, // Total
+                }
             });
 
             const afterInvoicesY = doc.lastAutoTable.finalY + 10;
 
             doc.setFont("helvetica", "bold");
-            doc.setFontSize(12);
+            doc.setFontSize(11);
+            doc.setTextColor(17, 24, 39);
             doc.text("Stock Sold Summary", 14, afterInvoicesY);
 
             autoTable(doc, {
+                ...standardTableOpts,
                 startY: afterInvoicesY + 4,
                 head: [["Barcode", "Product", "Brand", "Qty Sold", "Amount"]],
                 body: soldRows.map((item) => [
@@ -767,19 +772,16 @@ export default function Billing() {
                     item.qty,
                     `₹${money(item.amount)}`,
                 ]),
-                styles: {
-                    fontSize: 8,
-                    cellPadding: 2,
-                },
-                headStyles: {
-                    fillColor: [10, 32, 83],
-                    textColor: [255, 255, 255],
-                },
-                alternateRowStyles: {
-                    fillColor: [245, 247, 255],
-                },
-                margin: { left: 14, right: 14 },
+                columnStyles: {
+                    0: { halign: "center" }, // Barcode
+                    1: { halign: "left" }, // Product
+                    2: { halign: "left" }, // Brand
+                    3: { halign: "right" }, // Qty Sold
+                    4: { halign: "right" }, // Amount
+                }
             });
+
+            finalizePDF(doc, "Daily Sales Report", infoLeft, infoRight);
 
             doc.save(`SVS-Daily-Report-${fileDate}.pdf`);
         } catch (err) {
@@ -1736,4 +1738,4 @@ Thank you for your purchase! Please visit again.`;
             />
         </div>
     );
-}
+}  
